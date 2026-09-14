@@ -3,16 +3,11 @@ import { createFileRoute } from '@tanstack/react-router';
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/hooks/useAuth';
-import { vitalsData, testResults, healthTips } from '@/mocks/data/patient';
+import { healthTips } from '@/mocks/data/patient';
 import DashboardTopBar from '@/components/feature/DashboardTopBar';
-import AuthGuard from '@/components/base/AuthGuard';
 
 export const Route = createFileRoute('/patient')({
-  component: () => (
-    <AuthGuard role="patient">
-      <Patient />
-    </AuthGuard>
-  ),
+  component: Patient,
 });
 
 type Section = 'overview' | 'appointments' | 'records' | 'prescriptions';
@@ -53,15 +48,26 @@ const rxStatusConfig: Record<string, { label: string; class: string }> = {
   expired: { label: 'Expired', class: 'bg-foreground-100 text-foreground-500' },
 };
 
-const heartRateData = [
-  { t: 'Mon', v: 68 },
-  { t: 'Tue', v: 72 },
-  { t: 'Wed', v: 70 },
-  { t: 'Thu', v: 74 },
-  { t: 'Fri', v: 71 },
-  { t: 'Sat', v: 73 },
-  { t: 'Sun', v: 72 },
-];
+interface TestResultRow {
+  id: string;
+  test_name: string;
+  category: string | null;
+  result: string | null;
+  unit: string | null;
+  normal_range: string | null;
+  status: string;
+  date: string;
+  lab: string | null;
+}
+
+const vitalsMeta: Record<string, { label: string; icon: string }> = {
+  heart_rate: { label: 'Heart Rate', icon: 'ri-heart-pulse-line' },
+  blood_pressure: { label: 'Blood Pressure', icon: 'ri-drop-line' },
+  temperature: { label: 'Temperature', icon: 'ri-temp-hot-line' },
+  oxygen_saturation: { label: 'Oxygen Saturation', icon: 'ri-bubble-chart-line' },
+};
+
+const vitalsOrder = ['heart_rate', 'blood_pressure', 'temperature', 'oxygen_saturation'];
 
 function initialsOf(name: string) {
   const parts = name.replace(/^Dr\.?\s+/i, '').trim().split(/\s+/);
@@ -145,6 +151,8 @@ function OverviewSection({ onNavigate }: { onNavigate: (s: Section) => void }) {
   const { profile } = useAuth();
   const [appointments, setAppointments] = useState<Appt[]>([]);
   const [prescriptions, setPrescriptions] = useState<Rx[]>([]);
+  const [vitals, setVitals] = useState<{ metric: string; value: string; unit: string | null; recorded_on: string }[]>([]);
+  const [results, setResults] = useState<TestResultRow[]>([]);
 
   useEffect(() => {
     if (!profile) return;
@@ -152,23 +160,34 @@ function OverviewSection({ onNavigate }: { onNavigate: (s: Section) => void }) {
 
     const load = async () => {
       try {
-        const { data: appts } = await supabase
-          .from('appointments')
-          .select('id, doctor_name, specialty, type, date, time, status')
-          .eq('patient_id', profile.id)
-          .eq('status', 'upcoming')
-          .order('date', { ascending: true })
-          .limit(3);
-
-        const { data: rx } = await supabase
-          .from('prescriptions')
-          .select('id, medication, dosage, frequency, status')
-          .eq('patient_id', profile.id)
-          .eq('status', 'active');
+        const [appts, rx, vit, res] = await Promise.all([
+          supabase
+            .from('appointments')
+            .select('id, doctor_name, specialty, type, date, time, status')
+            .eq('patient_id', profile.id)
+            .eq('status', 'upcoming')
+            .order('date', { ascending: true })
+            .limit(3),
+          supabase
+            .from('prescriptions')
+            .select('id, medication, dosage, frequency, status')
+            .eq('patient_id', profile.id)
+            .eq('status', 'active'),
+          supabase
+            .from('vitals')
+            .select('metric, value, unit, recorded_on')
+            .eq('patient_id', profile.id)
+            .order('recorded_on', { ascending: true }),
+          supabase
+            .from('test_results')
+            .select('*')
+            .eq('patient_id', profile.id)
+            .order('date', { ascending: false }),
+        ]);
 
         if (!mounted) return;
         setAppointments(
-          (appts ?? []).map((a, i) => ({
+          (appts.data ?? []).map((a, i) => ({
             id: a.id,
             doctor: a.doctor_name ?? 'Unknown',
             specialty: a.specialty ?? '',
@@ -180,7 +199,7 @@ function OverviewSection({ onNavigate }: { onNavigate: (s: Section) => void }) {
           }))
         );
         setPrescriptions(
-          (rx ?? []).map((p, i) => ({
+          (rx.data ?? []).map((p, i) => ({
             id: p.id,
             medication: p.medication,
             dosage: p.dosage ?? '',
@@ -188,6 +207,8 @@ function OverviewSection({ onNavigate }: { onNavigate: (s: Section) => void }) {
             color: colors[i % colors.length],
           }))
         );
+        setVitals((vit.data ?? []) as { metric: string; value: string; unit: string | null; recorded_on: string }[]);
+        setResults((res.data ?? []) as TestResultRow[]);
       } catch {
         // non-blocking: leave lists empty on failure
       }
@@ -203,6 +224,20 @@ function OverviewSection({ onNavigate }: { onNavigate: (s: Section) => void }) {
   const firstName = profile?.first_name ?? 'there';
   const initials = (profile?.full_name ?? 'P').split(' ').map((w) => w[0] ?? '').slice(0, 2).join('').toUpperCase() || 'P';
 
+  const latestVitals = vitalsOrder
+    .map((metric) => {
+      const readings = vitals.filter((v) => v.metric === metric);
+      const latest = readings[readings.length - 1];
+      return latest ? { metric, label: vitalsMeta[metric].label, icon: vitalsMeta[metric].icon, value: latest.value, unit: latest.unit ?? '' } : null;
+    })
+    .filter((v): v is { metric: string; label: string; icon: string; value: string; unit: string } => v !== null);
+
+  const heartRateSeries = vitals
+    .filter((v) => v.metric === 'heart_rate')
+    .map((v) => ({ t: new Date(v.recorded_on).toLocaleDateString('en-US', { weekday: 'short' }), v: parseFloat(v.value) || 0 }));
+
+  const pendingResults = results.filter((r) => r.status !== 'normal').length;
+
   const quickStats = [
     {
       icon: 'ri-calendar-check-line',
@@ -212,11 +247,11 @@ function OverviewSection({ onNavigate }: { onNavigate: (s: Section) => void }) {
       color: 'bg-primary-100 text-primary-600',
     },
     { icon: 'ri-capsule-line', label: 'Active Prescriptions', value: String(prescriptions.length), sub: 'Currently taking', color: 'bg-accent-100 text-accent-600' },
-    { icon: 'ri-flask-line', label: 'Pending Results', value: '1', sub: 'Awaiting review', color: 'bg-secondary-100 text-secondary-600' },
-    { icon: 'ri-file-chart-line', label: 'Upcoming Tests', value: '1', sub: 'Blood work due', color: 'bg-primary-50 text-primary-600' },
+    { icon: 'ri-flask-line', label: 'Pending Results', value: String(pendingResults), sub: 'Awaiting review', color: 'bg-secondary-100 text-secondary-600' },
+    { icon: 'ri-file-chart-line', label: 'Test Results', value: String(results.length), sub: 'On record', color: 'bg-primary-50 text-primary-600' },
   ];
 
-  const recentResults = testResults.slice(0, 3);
+  const recentResults = results.slice(0, 3);
 
   return (
     <div className="space-y-6">
@@ -251,8 +286,11 @@ function OverviewSection({ onNavigate }: { onNavigate: (s: Section) => void }) {
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 md:gap-5">
         <div className="lg:col-span-1 grid grid-cols-2 gap-3">
-          {vitalsData.map((v) => (
-            <div key={v.label} className="bg-white rounded-2xl border border-background-200/60 p-4">
+          {latestVitals.length === 0 && (
+            <p className="text-sm text-foreground-400 col-span-2 py-6 text-center">No vitals recorded yet.</p>
+          )}
+          {latestVitals.map((v) => (
+            <div key={v.metric} className="bg-white rounded-2xl border border-background-200/60 p-4">
               <div className="flex items-center justify-between mb-2">
                 <div className="w-8 h-8 rounded-lg bg-background-50 flex items-center justify-center">
                   <i className={`${v.icon} text-primary-600 text-sm`}></i>
@@ -280,7 +318,7 @@ function OverviewSection({ onNavigate }: { onNavigate: (s: Section) => void }) {
           </div>
           <div className="h-48">
             <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={heartRateData} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
+              <AreaChart data={heartRateSeries} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
                 <defs>
                   <linearGradient id="hrGrad" x1="0" y1="0" x2="0" y2="1">
                     <stop offset="0%" stopColor="oklch(var(--primary-500))" stopOpacity={0.3} />
@@ -332,15 +370,16 @@ function OverviewSection({ onNavigate }: { onNavigate: (s: Section) => void }) {
             <button onClick={() => onNavigate('records')} className="text-xs font-medium text-primary-600 hover:text-primary-700 cursor-pointer">View all</button>
           </div>
           <div className="space-y-3">
+            {recentResults.length === 0 && <p className="text-sm text-foreground-400 py-4 text-center">No test results yet.</p>}
             {recentResults.map((r) => (
               <div key={r.id} className="flex items-center justify-between p-3 rounded-xl bg-background-50">
                 <div>
-                  <p className="text-sm font-semibold text-foreground-900">{r.testName}</p>
-                  <p className="text-[11px] text-foreground-400">{new Date(r.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} · {r.lab}</p>
+                  <p className="text-sm font-semibold text-foreground-900">{r.test_name}</p>
+                  <p className="text-[11px] text-foreground-400">{new Date(r.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} · {r.lab ?? ''}</p>
                 </div>
                 <div className="text-right">
-                  <p className="text-sm font-bold text-foreground-900">{r.result} <span className="text-[10px] font-normal text-foreground-400">{r.unit}</span></p>
-                  <span className={`inline-flex px-2 py-0.5 rounded-md text-[10px] font-medium ${resultStatusConfig[r.status].class}`}>{resultStatusConfig[r.status].label}</span>
+                  <p className="text-sm font-bold text-foreground-900">{r.result ?? '—'} <span className="text-[10px] font-normal text-foreground-400">{r.unit ?? ''}</span></p>
+                  <span className={`inline-flex px-2 py-0.5 rounded-md text-[10px] font-medium ${resultStatusConfig[r.status]?.class ?? 'bg-foreground-100 text-foreground-500'}`}>{resultStatusConfig[r.status]?.label ?? r.status}</span>
                 </div>
               </div>
             ))}
@@ -722,6 +761,7 @@ function RecordsSection() {
   const [records, setRecords] = useState<RecordItem[]>([]);
   const [doctors, setDoctors] = useState<CareDoctor[]>([]);
   const [grants, setGrants] = useState<Record<string, string[]>>({});
+  const [results, setResults] = useState<TestResultRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [managing, setManaging] = useState<RecordItem | null>(null);
@@ -745,8 +785,17 @@ function RecordsSection() {
         .eq('role', 'provider')
         .order('full_name', { ascending: true });
 
+      const { data: resRows, error: resErr } = await supabase
+        .from('test_results')
+        .select('*')
+        .eq('patient_id', patientId)
+        .order('date', { ascending: false });
+
       if (recErr) throw recErr;
       if (docErr) throw docErr;
+      if (resErr) throw resErr;
+
+      setResults((resRows ?? []) as TestResultRow[]);
 
       const recordList = (recs ?? []) as RecordItem[];
       setRecords(recordList);
@@ -836,6 +885,12 @@ function RecordsSection() {
       </div>
 
       {tab === 'results' ? (
+        loading ? (
+          <div className="bg-white rounded-2xl border border-background-200/60 flex flex-col items-center justify-center py-16 gap-3">
+            <div className="w-10 h-10 rounded-xl bg-primary-500 text-white flex items-center justify-center"><i className="ri-loader-4-line text-xl animate-spin"></i></div>
+            <p className="text-sm text-foreground-500">Loading test results…</p>
+          </div>
+        ) : (
         <div className="bg-white rounded-2xl border border-background-200/60 overflow-hidden">
           <div className="overflow-x-auto">
             <table className="w-full">
@@ -849,18 +904,23 @@ function RecordsSection() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-background-100">
-                {testResults.map((r) => (
+                {results.length === 0 && (
+                  <tr>
+                    <td colSpan={5} className="px-5 py-12 text-center text-sm text-foreground-400">No test results yet.</td>
+                  </tr>
+                )}
+                {results.map((r) => (
                   <tr key={r.id} className="hover:bg-background-50/50 transition-colors">
                     <td className="px-5 py-4">
-                      <p className="text-sm font-semibold text-foreground-900">{r.testName}</p>
-                      <p className="text-[11px] text-foreground-400">{r.category} · {r.lab}</p>
+                      <p className="text-sm font-semibold text-foreground-900">{r.test_name}</p>
+                      <p className="text-[11px] text-foreground-400">{r.category ?? ''}{r.lab ? ` · ${r.lab}` : ''}</p>
                     </td>
-                    <td className="px-5 py-4"><span className="text-sm font-bold text-foreground-900">{r.result} <span className="text-[11px] font-normal text-foreground-400">{r.unit}</span></span></td>
-                    <td className="px-5 py-4"><span className="text-sm text-foreground-500">{r.normalRange}</span></td>
+                    <td className="px-5 py-4"><span className="text-sm font-bold text-foreground-900">{r.result ?? '—'} <span className="text-[11px] font-normal text-foreground-400">{r.unit ?? ''}</span></span></td>
+                    <td className="px-5 py-4"><span className="text-sm text-foreground-500">{r.normal_range ?? '—'}</span></td>
                     <td className="px-5 py-4">
-                      <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium ${resultStatusConfig[r.status].class}`}>
+                      <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium ${resultStatusConfig[r.status]?.class ?? 'bg-foreground-100 text-foreground-500'}`}>
                         <span className="w-1.5 h-1.5 rounded-full bg-current"></span>
-                        {resultStatusConfig[r.status].label}
+                        {resultStatusConfig[r.status]?.label ?? r.status}
                       </span>
                     </td>
                     <td className="px-5 py-4"><span className="text-sm text-foreground-600">{new Date(r.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}</span></td>
@@ -870,6 +930,7 @@ function RecordsSection() {
             </table>
           </div>
         </div>
+        )
       ) : loading ? (
         <div className="flex flex-col items-center justify-center py-20 bg-white rounded-2xl border border-background-200/60 gap-3">
           <div className="w-10 h-10 rounded-xl bg-primary-500 text-white flex items-center justify-center">
@@ -1177,7 +1238,7 @@ function PrescriptionsSection() {
 
 /* ------------------------------ Main ------------------------------ */
 
-export default function Patient() {
+function Patient() {
   const { profile } = useAuth();
   const [section, setSection] = useState<Section>('overview');
   const [menuOpen, setMenuOpen] = useState(false);

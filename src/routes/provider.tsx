@@ -1,18 +1,13 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, type FormEvent } from 'react';
 import { createFileRoute } from '@tanstack/react-router';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/hooks/useAuth';
-import { visitTrend, quickActions } from '@/mocks/data/provider';
+import { quickActions } from '@/mocks/data/provider';
 import DashboardTopBar from '@/components/feature/DashboardTopBar';
-import AuthGuard from '@/components/base/AuthGuard';
 
 export const Route = createFileRoute('/provider')({
-  component: () => (
-    <AuthGuard role="provider">
-      <Provider />
-    </AuthGuard>
-  ),
+  component: Provider,
 });
 
 type Section = 'overview' | 'patients' | 'appointments';
@@ -149,48 +144,58 @@ function OverviewSection({ onNavigate }: { onNavigate: (s: Section) => void }) {
   const { profile } = useAuth();
   const [slots, setSlots] = useState<Slot[]>([]);
   const [patients, setPatients] = useState<PatientRow[]>([]);
+  const [totalPatients, setTotalPatients] = useState(0);
+  const [pendingResults, setPendingResults] = useState(0);
+  const [todayCount, setTodayCount] = useState(0);
+  const [onlineConsults, setOnlineConsults] = useState(0);
+  const [weeklyVisits, setWeeklyVisits] = useState<{ day: string; visits: number }[]>([]);
+  const [activeModal, setActiveModal] = useState<'prescription' | 'appointment' | 'labResult' | null>(null);
 
   const loadData = useCallback(async () => {
     if (!profile) return;
     try {
-      const { data: appts } = await supabase
-        .from('appointments')
-        .select('id, patient_id, type, date, time, status, reason')
-        .eq('provider_id', profile.id)
-        .order('date', { ascending: true })
-        .limit(6);
+      const todayStr = new Date().toISOString().slice(0, 10);
+      const [apptsRes, patsRes, pendingRes] = await Promise.all([
+        supabase
+          .from('appointments')
+          .select('id, patient_id, type, date, time, status, reason')
+          .eq('provider_id', profile.id)
+          .order('date', { ascending: true }),
+        supabase
+          .from('profiles')
+          .select('id, full_name, age, gender, condition, last_visit, status')
+          .eq('role', 'patient')
+          .order('full_name', { ascending: true }),
+        supabase.from('test_results').select('id', { count: 'exact', head: true }).neq('status', 'normal'),
+      ]);
 
-      const { data: pats } = await supabase
-        .from('profiles')
-        .select('id, full_name, age, gender, condition, last_visit, status')
-        .eq('role', 'patient')
-        .order('full_name', { ascending: true });
+      const allAppts = (apptsRes.data ?? []) as { id: string; patient_id: string | null; type: string | null; date: string; time: string | null; status: string | null; reason: string | null }[];
+      const pats = (patsRes.data ?? []) as { id: string; full_name: string; age: number | null; gender: string | null; condition: string | null; last_visit: string | null; status: string | null }[];
 
-      const patientIds = Array.from(new Set((appts ?? []).map((a) => a.patient_id).filter(Boolean))) as string[];
-      let nameMap: Record<string, string> = {};
-      if (patientIds.length > 0) {
-        const { data: profs } = await supabase.from('profiles').select('id, full_name').in('id', patientIds);
-        for (const p of (profs ?? [])) nameMap[p.id] = p.full_name;
-      }
+      const nameMap: Record<string, string> = {};
+      for (const p of pats) nameMap[p.id] = p.full_name;
 
       setSlots(
-        (appts ?? []).map((a, i) => {
-          const patientName = a.patient_id ? nameMap[a.patient_id] ?? 'Patient' : 'Patient';
-          return {
-            id: a.id,
-            time: a.time ?? '',
-            patientName,
-            initials: initialsOf(patientName),
-            reason: a.reason ?? '',
-            type: a.type === 'Video' ? 'Video' : 'In-person',
-            status: a.status ?? 'upcoming',
-            color: colors[i % colors.length],
-          };
-        })
+        allAppts
+          .filter((a) => a.status === 'upcoming')
+          .slice(0, 6)
+          .map((a, i) => {
+            const patientName = a.patient_id ? nameMap[a.patient_id] ?? 'Patient' : 'Patient';
+            return {
+              id: a.id,
+              time: a.time ?? '',
+              patientName,
+              initials: initialsOf(patientName),
+              reason: a.reason ?? '',
+              type: a.type === 'Video' ? 'Video' : 'In-person',
+              status: a.status ?? 'upcoming',
+              color: colors[i % colors.length],
+            };
+          })
       );
 
       setPatients(
-        (pats ?? []).slice(0, 5).map((p, i) => ({
+        pats.slice(0, 5).map((p, i) => ({
           id: p.id,
           full_name: p.full_name,
           initials: initialsOf(p.full_name),
@@ -202,6 +207,12 @@ function OverviewSection({ onNavigate }: { onNavigate: (s: Section) => void }) {
           status: p.status,
         }))
       );
+
+      setTotalPatients(pats.length);
+      setTodayCount(allAppts.filter((a) => a.date === todayStr).length);
+      setOnlineConsults(allAppts.filter((a) => a.type === 'Video' && a.status === 'upcoming').length);
+      setPendingResults(pendingRes.count ?? 0);
+      setWeeklyVisits(weeklyVisitsFrom(allAppts));
     } catch {
       // non-blocking: leave empty on failure
     }
@@ -215,11 +226,18 @@ function OverviewSection({ onNavigate }: { onNavigate: (s: Section) => void }) {
   const specialty = profile?.specialty ?? 'Healthcare Provider';
   const hospital = profile?.hospital ?? '';
 
+  const handleQuickAction = (label: string) => {
+    if (label === 'New Prescription') setActiveModal('prescription');
+    else if (label === 'Schedule Appointment') setActiveModal('appointment');
+    else if (label === 'Upload Lab Result') setActiveModal('labResult');
+    else onNavigate('appointments');
+  };
+
   const patientStats = [
-    { label: 'Total Patients', value: String(patients.length), change: 'In your network', icon: 'ri-user-heart-line', color: 'bg-primary-100 text-primary-600' },
-    { label: "Today's Appointments", value: String(slots.length), change: 'Scheduled', icon: 'ri-calendar-check-line', color: 'bg-accent-100 text-accent-600' },
-    { label: 'Pending Results', value: '8', change: 'Awaiting review', icon: 'ri-flask-line', color: 'bg-secondary-100 text-secondary-600' },
-    { label: 'Online Consults', value: '5', change: 'Today', icon: 'ri-vidicon-line', color: 'bg-primary-50 text-primary-600' },
+    { label: 'Total Patients', value: String(totalPatients), change: 'In your network', icon: 'ri-user-heart-line', color: 'bg-primary-100 text-primary-600' },
+    { label: "Today's Appointments", value: String(todayCount), change: 'Scheduled', icon: 'ri-calendar-check-line', color: 'bg-accent-100 text-accent-600' },
+    { label: 'Pending Results', value: String(pendingResults), change: 'Awaiting review', icon: 'ri-flask-line', color: 'bg-secondary-100 text-secondary-600' },
+    { label: 'Online Consults', value: String(onlineConsults), change: 'Upcoming', icon: 'ri-vidicon-line', color: 'bg-primary-50 text-primary-600' },
   ];
 
   return (
@@ -262,6 +280,7 @@ function OverviewSection({ onNavigate }: { onNavigate: (s: Section) => void }) {
         {quickActions.map((a) => (
           <button
             key={a.label}
+            onClick={() => handleQuickAction(a.label)}
             className="flex items-center gap-3 bg-white rounded-2xl border border-background-200/60 p-4 hover:border-primary-300 hover:-translate-y-0.5 transition-all cursor-pointer"
           >
             <div className={`${a.color} w-10 h-10 rounded-xl flex items-center justify-center shrink-0`}>
@@ -305,7 +324,7 @@ function OverviewSection({ onNavigate }: { onNavigate: (s: Section) => void }) {
           <p className="text-xs text-foreground-400 mb-4">Patient visits this week</p>
           <div className="h-52">
             <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={visitTrend} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
+              <BarChart data={weeklyVisits} margin={{ top: 5, right: 5, left: -20, bottom: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="oklch(var(--background-200))" vertical={false} />
                 <XAxis dataKey="day" tick={{ fontSize: 11, fill: 'oklch(var(--foreground-400))' }} axisLine={false} tickLine={false} />
                 <YAxis tick={{ fontSize: 11, fill: 'oklch(var(--foreground-400))' }} axisLine={false} tickLine={false} />
@@ -360,6 +379,16 @@ function OverviewSection({ onNavigate }: { onNavigate: (s: Section) => void }) {
           </table>
         </div>
       </div>
+
+      {activeModal === 'prescription' && (
+        <PrescriptionModal onClose={() => setActiveModal(null)} onSaved={() => { setActiveModal(null); loadData(); }} />
+      )}
+      {activeModal === 'appointment' && (
+        <AppointmentModal onClose={() => setActiveModal(null)} onSaved={() => { setActiveModal(null); loadData(); }} />
+      )}
+      {activeModal === 'labResult' && (
+        <LabResultModal onClose={() => setActiveModal(null)} onSaved={() => { setActiveModal(null); loadData(); }} />
+      )}
     </div>
   );
 }
@@ -384,6 +413,7 @@ function AppointmentsSection() {
   const [slots, setSlots] = useState<ScheduleSlot[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [apptModalOpen, setApptModalOpen] = useState(false);
 
   const loadData = useCallback(async () => {
     if (!profile) return;
@@ -449,7 +479,7 @@ function AppointmentsSection() {
           <h1 className="font-heading text-xl md:text-2xl font-bold text-foreground-900">Appointments</h1>
           <p className="text-sm text-foreground-500 mt-0.5">Manage your daily schedule and consultations.</p>
         </div>
-        <button className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-primary-500 text-white text-sm font-semibold hover:bg-primary-600 transition-colors cursor-pointer whitespace-nowrap">
+        <button onClick={() => setApptModalOpen(true)} className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-primary-500 text-white text-sm font-semibold hover:bg-primary-600 transition-colors cursor-pointer whitespace-nowrap">
           <i className="ri-calendar-event-line"></i>
           New Appointment
         </button>
@@ -523,6 +553,10 @@ function AppointmentsSection() {
           </div>
         </div>
       )}
+
+      {apptModalOpen && (
+        <AppointmentModal onClose={() => setApptModalOpen(false)} onSaved={() => { setApptModalOpen(false); loadData(); }} />
+      )}
     </div>
   );
 }
@@ -564,6 +598,7 @@ function PatientsSection() {
   const [records, setRecords] = useState<RecordItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [addPatientOpen, setAddPatientOpen] = useState(false);
 
   const loadData = useCallback(async () => {
     if (!profile) return;
@@ -627,7 +662,7 @@ function PatientsSection() {
           <h1 className="font-heading text-xl md:text-2xl font-bold text-foreground-900">Patients</h1>
           <p className="text-sm text-foreground-500 mt-0.5">{patients.length} patients in your network.</p>
         </div>
-        <button className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-primary-500 text-white text-sm font-semibold hover:bg-primary-600 transition-colors cursor-pointer whitespace-nowrap">
+        <button onClick={() => setAddPatientOpen(true)} className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-primary-500 text-white text-sm font-semibold hover:bg-primary-600 transition-colors cursor-pointer whitespace-nowrap">
           <i className="ri-user-add-line"></i>
           Add Patient
         </button>
@@ -795,13 +830,422 @@ function PatientsSection() {
           </div>
         </div>
       )}
+      {addPatientOpen && (
+        <AddPatientModal onClose={() => setAddPatientOpen(false)} onSaved={() => { setAddPatientOpen(false); loadData(); }} />
+      )}
+    </div>
+  );
+}
+
+/* ------------------------------ Provider Modals ------------------------------ */
+
+function weeklyVisitsFrom(appts: { date: string }[]) {
+  const today = new Date();
+  const day = (today.getDay() + 6) % 7; // Monday = 0
+  const monday = new Date(today);
+  monday.setHours(0, 0, 0, 0);
+  monday.setDate(today.getDate() - day);
+  const labels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+  const counts = new Array(7).fill(0);
+  for (const a of appts) {
+    const d = new Date(a.date);
+    const diff = Math.floor((d.getTime() - monday.getTime()) / (1000 * 60 * 60 * 24));
+    if (diff >= 0 && diff < 7) counts[diff] += 1;
+  }
+  return labels.map((label, i) => ({ day: label, visits: counts[i] }));
+}
+
+async function fetchPatientOptions(): Promise<{ id: string; full_name: string }[]> {
+  const { data } = await supabase
+    .from('profiles')
+    .select('id, full_name')
+    .eq('role', 'patient')
+    .order('full_name', { ascending: true });
+  return (data ?? []) as { id: string; full_name: string }[];
+}
+
+const modalInputClass =
+  'w-full px-3 py-2.5 text-sm bg-white border border-background-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-primary-200 transition-all';
+const modalLabelClass = 'text-xs font-medium text-foreground-600 mb-1.5 block';
+
+function PrescriptionModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
+  const { profile } = useAuth();
+  const [patients, setPatients] = useState<{ id: string; full_name: string }[]>([]);
+  const [form, setForm] = useState({ patientId: '', medication: '', dosage: '', frequency: '', instructions: '', refills: '0', startDate: '', endDate: '' });
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetchPatientOptions().then(setPatients).catch(() => setPatients([]));
+  }, []);
+
+  const submit = async (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    setError(null);
+    if (!form.patientId || !form.medication.trim()) {
+      setError('Select a patient and enter a medication name.');
+      return;
+    }
+    setSubmitting(true);
+    const { error: insErr } = await supabase.from('prescriptions').insert({
+      patient_id: form.patientId,
+      medication: form.medication.trim(),
+      dosage: form.dosage.trim() || null,
+      frequency: form.frequency.trim() || null,
+      prescribed_by: profile?.full_name ?? 'Provider',
+      start_date: form.startDate || null,
+      end_date: form.endDate || null,
+      status: 'active',
+      refills_left: parseInt(form.refills, 10) || 0,
+      instructions: form.instructions.trim() || null,
+    });
+    setSubmitting(false);
+    if (insErr) {
+      setError(insErr.message);
+      return;
+    }
+    onSaved();
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/40" onClick={onClose}></div>
+      <div className="relative bg-white rounded-2xl w-full max-w-md p-6 max-h-[90vh] overflow-y-auto">
+        <div className="flex items-center justify-between mb-5">
+          <h3 className="font-heading font-bold text-foreground-900 text-lg">New Prescription</h3>
+          <button onClick={onClose} className="w-8 h-8 rounded-lg flex items-center justify-center text-foreground-500 hover:bg-background-50 cursor-pointer">
+            <i className="ri-close-line"></i>
+          </button>
+        </div>
+        <form onSubmit={submit} className="space-y-4">
+          <div>
+            <label className={modalLabelClass}>Patient</label>
+            <select value={form.patientId} onChange={(e) => setForm((f) => ({ ...f, patientId: e.target.value }))} className={`${modalInputClass} cursor-pointer`}>
+              <option value="">Select patient…</option>
+              {patients.map((p) => (
+                <option key={p.id} value={p.id}>{p.full_name}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className={modalLabelClass}>Medication</label>
+            <input type="text" value={form.medication} onChange={(e) => setForm((f) => ({ ...f, medication: e.target.value }))} placeholder="e.g. Amlodipine" className={modalInputClass} />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className={modalLabelClass}>Dosage</label>
+              <input type="text" value={form.dosage} onChange={(e) => setForm((f) => ({ ...f, dosage: e.target.value }))} placeholder="e.g. 5 mg" className={modalInputClass} />
+            </div>
+            <div>
+              <label className={modalLabelClass}>Frequency</label>
+              <input type="text" value={form.frequency} onChange={(e) => setForm((f) => ({ ...f, frequency: e.target.value }))} placeholder="e.g. Once daily" className={modalInputClass} />
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className={modalLabelClass}>Start date</label>
+              <input type="date" value={form.startDate} onChange={(e) => setForm((f) => ({ ...f, startDate: e.target.value }))} className={modalInputClass} />
+            </div>
+            <div>
+              <label className={modalLabelClass}>End date</label>
+              <input type="date" value={form.endDate} onChange={(e) => setForm((f) => ({ ...f, endDate: e.target.value }))} className={modalInputClass} />
+            </div>
+          </div>
+          <div>
+            <label className={modalLabelClass}>Refills</label>
+            <input type="number" min="0" value={form.refills} onChange={(e) => setForm((f) => ({ ...f, refills: e.target.value }))} className={modalInputClass} />
+          </div>
+          <div>
+            <label className={modalLabelClass}>Instructions</label>
+            <textarea rows={2} placeholder="e.g. Take with food" value={form.instructions} onChange={(e) => setForm((f) => ({ ...f, instructions: e.target.value }))} className={`${modalInputClass} resize-none`}></textarea>
+          </div>
+          {error && <p className="text-xs text-accent-700 bg-accent-50 border border-accent-200/50 rounded-lg px-3 py-2">{error}</p>}
+          <button type="submit" disabled={submitting} className="w-full py-2.5 rounded-xl bg-primary-500 text-white text-sm font-semibold hover:bg-primary-600 transition-colors cursor-pointer whitespace-nowrap disabled:opacity-60 disabled:cursor-not-allowed">
+            {submitting ? 'Saving…' : 'Issue Prescription'}
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function AppointmentModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
+  const { profile } = useAuth();
+  const [patients, setPatients] = useState<{ id: string; full_name: string }[]>([]);
+  const [form, setForm] = useState({ patientId: '', date: '', time: '', type: 'In-person', reason: '' });
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetchPatientOptions().then(setPatients).catch(() => setPatients([]));
+  }, []);
+
+  const submit = async (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    setError(null);
+    if (!form.patientId || !form.date || !form.time) {
+      setError('Select a patient, date, and time.');
+      return;
+    }
+    setSubmitting(true);
+    const { error: insErr } = await supabase.from('appointments').insert({
+      patient_id: form.patientId,
+      provider_id: profile?.id ?? null,
+      doctor_name: profile?.full_name ?? '',
+      specialty: profile?.specialty ?? '',
+      clinic: profile?.hospital ?? '',
+      type: form.type,
+      date: form.date,
+      time: form.time,
+      status: 'upcoming',
+      reason: form.reason.trim() || null,
+    });
+    setSubmitting(false);
+    if (insErr) {
+      setError(insErr.message);
+      return;
+    }
+    onSaved();
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/40" onClick={onClose}></div>
+      <div className="relative bg-white rounded-2xl w-full max-w-md p-6">
+        <div className="flex items-center justify-between mb-5">
+          <h3 className="font-heading font-bold text-foreground-900 text-lg">New Appointment</h3>
+          <button onClick={onClose} className="w-8 h-8 rounded-lg flex items-center justify-center text-foreground-500 hover:bg-background-50 cursor-pointer">
+            <i className="ri-close-line"></i>
+          </button>
+        </div>
+        <form onSubmit={submit} className="space-y-4">
+          <div>
+            <label className={modalLabelClass}>Patient</label>
+            <select value={form.patientId} onChange={(e) => setForm((f) => ({ ...f, patientId: e.target.value }))} className={`${modalInputClass} cursor-pointer`}>
+              <option value="">Select patient…</option>
+              {patients.map((p) => (
+                <option key={p.id} value={p.id}>{p.full_name}</option>
+              ))}
+            </select>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className={modalLabelClass}>Date</label>
+              <input type="date" value={form.date} onChange={(e) => setForm((f) => ({ ...f, date: e.target.value }))} className={modalInputClass} />
+            </div>
+            <div>
+              <label className={modalLabelClass}>Time</label>
+              <input type="time" value={form.time} onChange={(e) => setForm((f) => ({ ...f, time: e.target.value }))} className={modalInputClass} />
+            </div>
+          </div>
+          <div>
+            <label className={modalLabelClass}>Type</label>
+            <select value={form.type} onChange={(e) => setForm((f) => ({ ...f, type: e.target.value }))} className={`${modalInputClass} cursor-pointer`}>
+              <option value="In-person">In-person</option>
+              <option value="Video">Video</option>
+            </select>
+          </div>
+          <div>
+            <label className={modalLabelClass}>Reason</label>
+            <textarea rows={2} placeholder="Reason for visit…" value={form.reason} onChange={(e) => setForm((f) => ({ ...f, reason: e.target.value }))} className={`${modalInputClass} resize-none`}></textarea>
+          </div>
+          {error && <p className="text-xs text-accent-700 bg-accent-50 border border-accent-200/50 rounded-lg px-3 py-2">{error}</p>}
+          <button type="submit" disabled={submitting} className="w-full py-2.5 rounded-xl bg-primary-500 text-white text-sm font-semibold hover:bg-primary-600 transition-colors cursor-pointer whitespace-nowrap disabled:opacity-60 disabled:cursor-not-allowed">
+            {submitting ? 'Scheduling…' : 'Schedule Appointment'}
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function LabResultModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
+  const [patients, setPatients] = useState<{ id: string; full_name: string }[]>([]);
+  const [form, setForm] = useState({ patientId: '', testName: '', category: '', result: '', unit: '', normalRange: '', status: 'normal', lab: '' });
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetchPatientOptions().then(setPatients).catch(() => setPatients([]));
+  }, []);
+
+  const submit = async (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    setError(null);
+    if (!form.patientId || !form.testName.trim() || !form.result.trim()) {
+      setError('Select a patient and enter a test name and result.');
+      return;
+    }
+    setSubmitting(true);
+    const { error: insErr } = await supabase.from('test_results').insert({
+      patient_id: form.patientId,
+      test_name: form.testName.trim(),
+      category: form.category.trim() || null,
+      result: form.result.trim(),
+      unit: form.unit.trim() || null,
+      normal_range: form.normalRange.trim() || null,
+      status: form.status,
+      date: new Date().toISOString().slice(0, 10),
+      lab: form.lab.trim() || null,
+    });
+    setSubmitting(false);
+    if (insErr) {
+      setError(insErr.message);
+      return;
+    }
+    onSaved();
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/40" onClick={onClose}></div>
+      <div className="relative bg-white rounded-2xl w-full max-w-md p-6 max-h-[90vh] overflow-y-auto">
+        <div className="flex items-center justify-between mb-5">
+          <h3 className="font-heading font-bold text-foreground-900 text-lg">Upload Lab Result</h3>
+          <button onClick={onClose} className="w-8 h-8 rounded-lg flex items-center justify-center text-foreground-500 hover:bg-background-50 cursor-pointer">
+            <i className="ri-close-line"></i>
+          </button>
+        </div>
+        <form onSubmit={submit} className="space-y-4">
+          <div>
+            <label className={modalLabelClass}>Patient</label>
+            <select value={form.patientId} onChange={(e) => setForm((f) => ({ ...f, patientId: e.target.value }))} className={`${modalInputClass} cursor-pointer`}>
+              <option value="">Select patient…</option>
+              {patients.map((p) => (
+                <option key={p.id} value={p.id}>{p.full_name}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className={modalLabelClass}>Test name</label>
+            <input type="text" value={form.testName} onChange={(e) => setForm((f) => ({ ...f, testName: e.target.value }))} placeholder="e.g. Haemoglobin (Hb)" className={modalInputClass} />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className={modalLabelClass}>Result</label>
+              <input type="text" value={form.result} onChange={(e) => setForm((f) => ({ ...f, result: e.target.value }))} placeholder="e.g. 12.8" className={modalInputClass} />
+            </div>
+            <div>
+              <label className={modalLabelClass}>Unit</label>
+              <input type="text" value={form.unit} onChange={(e) => setForm((f) => ({ ...f, unit: e.target.value }))} placeholder="e.g. g/dL" className={modalInputClass} />
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className={modalLabelClass}>Category</label>
+              <input type="text" value={form.category} onChange={(e) => setForm((f) => ({ ...f, category: e.target.value }))} placeholder="e.g. Full Blood Count" className={modalInputClass} />
+            </div>
+            <div>
+              <label className={modalLabelClass}>Reference range</label>
+              <input type="text" value={form.normalRange} onChange={(e) => setForm((f) => ({ ...f, normalRange: e.target.value }))} placeholder="e.g. 12.0 – 15.5" className={modalInputClass} />
+            </div>
+          </div>
+          <div>
+            <label className={modalLabelClass}>Status</label>
+            <select value={form.status} onChange={(e) => setForm((f) => ({ ...f, status: e.target.value }))} className={`${modalInputClass} cursor-pointer`}>
+              <option value="normal">Normal</option>
+              <option value="high">High</option>
+              <option value="low">Low</option>
+            </select>
+          </div>
+          <div>
+            <label className={modalLabelClass}>Lab</label>
+            <input type="text" value={form.lab} onChange={(e) => setForm((f) => ({ ...f, lab: e.target.value }))} placeholder="e.g. Lakeshore Diagnostics" className={modalInputClass} />
+          </div>
+          {error && <p className="text-xs text-accent-700 bg-accent-50 border border-accent-200/50 rounded-lg px-3 py-2">{error}</p>}
+          <button type="submit" disabled={submitting} className="w-full py-2.5 rounded-xl bg-primary-500 text-white text-sm font-semibold hover:bg-primary-600 transition-colors cursor-pointer whitespace-nowrap disabled:opacity-60 disabled:cursor-not-allowed">
+            {submitting ? 'Uploading…' : 'Upload Result'}
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function AddPatientModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
+  const [form, setForm] = useState({ fullName: '', age: '', gender: '', bloodType: '', condition: '' });
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const submit = async (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    setError(null);
+    if (!form.fullName.trim()) {
+      setError('Enter the patient\u2019s full name.');
+      return;
+    }
+    setSubmitting(true);
+    const ageNum = parseInt(form.age, 10);
+    const { error: insErr } = await supabase.from('profiles').insert({
+      role: 'patient',
+      full_name: form.fullName.trim(),
+      age: Number.isNaN(ageNum) ? null : ageNum,
+      gender: form.gender.trim() || null,
+      blood_type: form.bloodType.trim() || null,
+      condition: form.condition.trim() || null,
+      status: 'stable',
+    });
+    setSubmitting(false);
+    if (insErr) {
+      setError(insErr.message);
+      return;
+    }
+    onSaved();
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/40" onClick={onClose}></div>
+      <div className="relative bg-white rounded-2xl w-full max-w-md p-6">
+        <div className="flex items-center justify-between mb-5">
+          <h3 className="font-heading font-bold text-foreground-900 text-lg">Add Patient</h3>
+          <button onClick={onClose} className="w-8 h-8 rounded-lg flex items-center justify-center text-foreground-500 hover:bg-background-50 cursor-pointer">
+            <i className="ri-close-line"></i>
+          </button>
+        </div>
+        <form onSubmit={submit} className="space-y-4">
+          <div>
+            <label className={modalLabelClass}>Full name</label>
+            <input type="text" value={form.fullName} onChange={(e) => setForm((f) => ({ ...f, fullName: e.target.value }))} placeholder="e.g. Amara Okafor" className={modalInputClass} />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className={modalLabelClass}>Age</label>
+              <input type="number" min="0" value={form.age} onChange={(e) => setForm((f) => ({ ...f, age: e.target.value }))} placeholder="e.g. 34" className={modalInputClass} />
+            </div>
+            <div>
+              <label className={modalLabelClass}>Gender</label>
+              <select value={form.gender} onChange={(e) => setForm((f) => ({ ...f, gender: e.target.value }))} className={`${modalInputClass} cursor-pointer`}>
+                <option value="">Select…</option>
+                <option value="Female">Female</option>
+                <option value="Male">Male</option>
+                <option value="Other">Other</option>
+              </select>
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className={modalLabelClass}>Blood type</label>
+              <input type="text" value={form.bloodType} onChange={(e) => setForm((f) => ({ ...f, bloodType: e.target.value }))} placeholder="e.g. O+" className={modalInputClass} />
+            </div>
+            <div>
+              <label className={modalLabelClass}>Condition</label>
+              <input type="text" value={form.condition} onChange={(e) => setForm((f) => ({ ...f, condition: e.target.value }))} placeholder="e.g. Hypertension" className={modalInputClass} />
+            </div>
+          </div>
+          {error && <p className="text-xs text-accent-700 bg-accent-50 border border-accent-200/50 rounded-lg px-3 py-2">{error}</p>}
+          <button type="submit" disabled={submitting} className="w-full py-2.5 rounded-xl bg-primary-500 text-white text-sm font-semibold hover:bg-primary-600 transition-colors cursor-pointer whitespace-nowrap disabled:opacity-60 disabled:cursor-not-allowed">
+            {submitting ? 'Adding…' : 'Add Patient'}
+          </button>
+        </form>
+      </div>
     </div>
   );
 }
 
 /* ------------------------------ Main ------------------------------ */
 
-export default function Provider() {
+function Provider() {
   const { profile } = useAuth();
   const [section, setSection] = useState<Section>('overview');
   const [menuOpen, setMenuOpen] = useState(false);

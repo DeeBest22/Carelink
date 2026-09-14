@@ -1,14 +1,8 @@
 import { useState, useEffect, type FormEvent } from 'react';
-import { createFileRoute, Link, useNavigate } from '@tanstack/react-router';
+import { createFileRoute, useNavigate, Link, useSearch } from '@tanstack/react-router';
 import { useAuth } from '@/hooks/useAuth';
 
-type AuthSearch = { mode?: 'signin' | 'signup'; role?: 'patient' | 'provider' };
-
 export const Route = createFileRoute('/auth')({
-  validateSearch: (search: Record<string, unknown>): AuthSearch => ({
-    mode: search.mode === 'signup' ? 'signup' : 'signin',
-    role: search.role === 'provider' ? 'provider' : 'patient',
-  }),
   component: AuthPage,
 });
 
@@ -22,7 +16,7 @@ const roleOptions: { key: Role; label: string; sub: string; icon: string }[] = [
 
 function AuthPage() {
   const navigate = useNavigate();
-  const search = Route.useSearch();
+  const search = useSearch({ strict: false }) as { mode?: string; role?: string };
   const { signIn, signUp, profile, user, loading } = useAuth();
 
   const [mode, setMode] = useState<Mode>(search.mode === 'signup' ? 'signup' : 'signin');
