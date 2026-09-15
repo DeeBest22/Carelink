@@ -70,7 +70,7 @@ function AuthPage() {
         setError(res.error);
         return;
       }
-      goToPortal(profile?.role === 'provider' ? 'provider' : 'patient');
+      goToPortal(res.profile?.role === 'provider' ? 'provider' : 'patient');
     }
   };
 
