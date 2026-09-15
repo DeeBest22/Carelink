@@ -9,26 +9,11 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
     autoRefreshToken: true,
     detectSessionInUrl: true,
     storageKey: 'carelink-auth-token',
-    lock: () => {
+    lock: (name, acquireTimeout, fn) => {
       if (typeof navigator === 'undefined' || !navigator.locks) {
-        return Promise.resolve(() => {});
+        return fn();
       }
-      return new Promise<() => void>((resolve) => {
-        let settled = false;
-        const finish = () => {
-          if (!settled) {
-            settled = true;
-            clearTimeout(timer);
-            resolve(() => {});
-          }
-        };
-        const timer = setTimeout(finish, 10000);
-        navigator.locks
-          .request('carelink_auth_lock', { mode: 'exclusive' }, (lock) => {
-            if (lock) finish();
-          })
-          .catch(finish);
-      });
+      return navigator.locks.request(name, { mode: 'exclusive' }, () => fn());
     },
   },
 });
