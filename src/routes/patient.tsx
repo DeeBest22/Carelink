@@ -459,7 +459,7 @@ interface Doctor {
 }
 
 function AppointmentsSection() {
-  const { profile } = useAuth();
+  const { profile, loading: authLoading, profileError, refreshProfile } = useAuth();
   const [filter, setFilter] = useState<Filter>('upcoming');
   const [bookingOpen, setBookingOpen] = useState(false);
   const [booked, setBooked] = useState(false);
@@ -474,7 +474,13 @@ function AppointmentsSection() {
   const [submitError, setSubmitError] = useState<string | null>(null);
 
   const loadData = useCallback(async () => {
-    if (!profile) return;
+    if (!profile) {
+      // Not an error by itself — either we're still resolving the session,
+      // or the person genuinely isn't signed in. Either way, don't show
+      // stale data or spin forever; reflect the real state.
+      setLoading(authLoading);
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
@@ -521,11 +527,21 @@ function AppointmentsSection() {
     } finally {
       setLoading(false);
     }
-  }, [profile]);
+  }, [profile, authLoading]);
 
   useEffect(() => {
     loadData();
   }, [loadData]);
+
+  const retry = useCallback(async () => {
+    if (!profile && profileError) {
+      // The profile itself failed to load — retry that first, loadData will
+      // follow automatically once `profile` updates.
+      await refreshProfile();
+    } else {
+      await loadData();
+    }
+  }, [profile, profileError, refreshProfile, loadData]);
 
   const filtered = appointments.filter((a) => {
     if (filter === 'upcoming') return a.status === 'upcoming';
@@ -608,14 +624,21 @@ function AppointmentsSection() {
           </div>
           <p className="text-sm text-foreground-500">Loading appointments…</p>
         </div>
-      ) : error ? (
+      ) : error || (!profile && profileError) ? (
         <div className="flex flex-col items-center justify-center py-16 bg-white rounded-2xl border border-background-200/60 gap-3">
           <div className="w-12 h-12 rounded-2xl bg-accent-100 flex items-center justify-center">
             <i className="ri-error-warning-line text-2xl text-accent-600"></i>
           </div>
           <p className="text-sm font-medium text-foreground-600">Couldn't load appointments</p>
-          <p className="text-xs text-foreground-400 max-w-sm text-center">{error}</p>
-          <button onClick={loadData} className="mt-1 px-4 py-2 rounded-lg bg-primary-500 text-white text-sm font-semibold hover:bg-primary-600 cursor-pointer whitespace-nowrap">Retry</button>
+          <p className="text-xs text-foreground-400 max-w-sm text-center">{error ?? profileError}</p>
+          <button onClick={retry} className="mt-1 px-4 py-2 rounded-lg bg-primary-500 text-white text-sm font-semibold hover:bg-primary-600 cursor-pointer whitespace-nowrap">Retry</button>
+        </div>
+      ) : !profile ? (
+        <div className="text-center py-16 bg-white rounded-2xl border border-background-200/60">
+          <div className="w-14 h-14 rounded-2xl bg-background-100 flex items-center justify-center mx-auto mb-3">
+            <i className="ri-calendar-line text-2xl text-foreground-300"></i>
+          </div>
+          <p className="text-sm font-medium text-foreground-500">Sign in to see your appointments</p>
         </div>
       ) : (
         <div className="space-y-3">
@@ -755,7 +778,7 @@ interface CareDoctor {
 }
 
 function RecordsSection() {
-  const { profile } = useAuth();
+  const { profile, loading: authLoading, profileError, refreshProfile } = useAuth();
   const [tab, setTab] = useState<Tab>('results');
 
   const [records, setRecords] = useState<RecordItem[]>([]);
@@ -767,7 +790,10 @@ function RecordsSection() {
   const [managing, setManaging] = useState<RecordItem | null>(null);
 
   const loadData = useCallback(async () => {
-    if (!profile) return;
+    if (!profile) {
+      setLoading(authLoading);
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
@@ -831,11 +857,19 @@ function RecordsSection() {
     } finally {
       setLoading(false);
     }
-  }, [profile]);
+  }, [profile, authLoading]);
 
   useEffect(() => {
     loadData();
   }, [loadData]);
+
+  const retry = useCallback(async () => {
+    if (!profile && profileError) {
+      await refreshProfile();
+    } else {
+      await loadData();
+    }
+  }, [profile, profileError, refreshProfile, loadData]);
 
   const toggleGrant = async (recordId: string, providerId: string) => {
     const current = grants[recordId] ?? [];
