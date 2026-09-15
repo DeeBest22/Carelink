@@ -23,7 +23,7 @@ interface AuthContextValue {
   profile: Profile | null;
   loading: boolean;
   signUp: (email: string, password: string, role: Role, fullName: string) => Promise<SignUpResult>;
-  signIn: (email: string, password: string) => Promise<{ error?: string }>;
+  signIn: (email: string, password: string) => Promise<{ error?: string; profile?: Profile | null }>;
   signOut: () => Promise<void>;
 }
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
@@ -177,7 +177,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(data.user);
     const prof = await ensureProfile(data.user);
     setProfile(prof);
-    return {};
+    return { profile: prof };
   }, []);
   const signOut = useCallback(async () => {
     await supabase.auth.signOut();
@@ -194,4 +194,4 @@ export function useAuth() {
   const ctx = useContext(AuthContext);
   if (!ctx) throw new Error('useAuth must be used within AuthProvider');
   return ctx;
-} 
+}
