@@ -22,12 +22,14 @@ interface AuthContextValue {
   user: User | null;
   profile: Profile | null;
   loading: boolean;
+  profileError: string | null;
   signUp: (email: string, password: string, role: Role, fullName: string) => Promise<SignUpResult>;
   signIn: (email: string, password: string) => Promise<{ error?: string; profile?: Profile | null }>;
   signOut: () => Promise<void>;
+  refreshProfile: () => Promise<void>;
 }
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
-async function fetchProfile(userId: string): Promise<Profile | null> {
+async function fetchProfile(userId: string): Promise<{ profile: Profile | null; error: string | null }> {
   const { data, error } = await supabase
     .from('profiles')
     .select('*')
@@ -35,9 +37,9 @@ async function fetchProfile(userId: string): Promise<Profile | null> {
     .maybeSingle();
   if (error) {
     console.error('Failed to fetch profile:', error.message);
-    return null;
+    return { profile: null, error: error.message };
   }
-  return (data as Profile) ?? null;
+  return { profile: (data as Profile) ?? null, error: null };
 }
 async function seedPatientData(patientId: string) {
   const { data: doctors } = await supabase
@@ -104,17 +106,19 @@ async function createProfileForUser(userId: string, role: Role, fullName: string
 // If a user has an auth account but no profiles row yet (e.g. they signed up while
 // email confirmation was required, so signUp's immediate profile creation was skipped),
 // create it now from the role/full_name stored in their auth metadata at signup time.
-async function ensureProfile(user: User): Promise<Profile | null> {
+async function ensureProfile(user: User): Promise<{ profile: Profile | null; error: string | null }> {
   const existing = await fetchProfile(user.id);
-  if (existing) return existing;
+  if (existing.profile || existing.error) return existing;
   const meta = user.user_metadata as { role?: Role; full_name?: string } | undefined;
-  if (!meta?.role || !meta?.full_name) return null;
-  await createProfileForUser(user.id, meta.role, meta.full_name, user.email ?? '');
+  if (!meta?.role || !meta?.full_name) return { profile: null, error: null };
+  const createErr = await createProfileForUser(user.id, meta.role, meta.full_name, user.email ?? '');
+  if (createErr) return { profile: null, error: createErr };
   return fetchProfile(user.id);
 }
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
+  const [profileError, setProfileError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   useEffect(() => {
     let mounted = true;
@@ -123,9 +127,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const session = data?.session ?? null;
       setUser(session?.user ?? null);
       if (session?.user) {
-        ensureProfile(session.user).then((prof) => {
+        ensureProfile(session.user).then(({ profile: prof, error: profErr }) => {
           if (mounted) {
             setProfile(prof);
+            setProfileError(profErr);
             setLoading(false);
           }
         });
@@ -138,11 +143,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const sessionUser = session?.user ?? null;
       if (mounted) setUser(sessionUser);
       if (sessionUser) {
-        ensureProfile(sessionUser).then((prof) => {
-          if (mounted) setProfile(prof);
+        ensureProfile(sessionUser).then(({ profile: prof, error: profErr }) => {
+          if (mounted) {
+            setProfile(prof);
+            setProfileError(profErr);
+          }
         });
       } else if (mounted) {
         setProfile(null);
+        setProfileError(null);
       }
     });
     return () => {
@@ -150,6 +159,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       sub.subscription.unsubscribe();
     };
   }, []);
+  const refreshProfile = useCallback(async () => {
+    if (!user) return;
+    const { profile: prof, error: profErr } = await ensureProfile(user);
+    setProfile(prof);
+    setProfileError(profErr);
+  }, [user]);
   const signUp = useCallback(async (email: string, password: string, role: Role, fullName: string): Promise<SignUpResult> => {
     const { data, error } = await supabase.auth.signUp({
       email,
@@ -166,8 +181,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const createErr = await createProfileForUser(newUser.id, role, fullName, email);
       if (createErr) return { error: createErr };
       setUser(data.session.user);
-      const prof = await fetchProfile(newUser.id);
+      const { profile: prof, error: profErr } = await fetchProfile(newUser.id);
       setProfile(prof);
+      setProfileError(profErr);
     }
     return { needsConfirmation: !data.session };
   }, []);
@@ -175,17 +191,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const { data, error } = await supabase.auth.signInWithPassword({ email, password });
     if (error) return { error: error.message };
     setUser(data.user);
-    const prof = await ensureProfile(data.user);
+    const { profile: prof, error: profErr } = await ensureProfile(data.user);
     setProfile(prof);
-    return { profile: prof };
+    setProfileError(profErr);
+    return profErr ? { error: profErr, profile: prof } : { profile: prof };
   }, []);
   const signOut = useCallback(async () => {
     await supabase.auth.signOut();
     setUser(null);
     setProfile(null);
+    setProfileError(null);
   }, []);
   return (
-    <AuthContext.Provider value={{ user, profile, loading, signUp, signIn, signOut }}>
+    <AuthContext.Provider value={{ user, profile, loading, profileError, signUp, signIn, signOut, refreshProfile }}>
       {children}
     </AuthContext.Provider>
   );
