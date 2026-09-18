@@ -577,6 +577,14 @@ interface PatientCard {
   color: string;
 }
 
+interface RecordFileItem {
+  id: string;
+  file_name: string;
+  file_type: string;
+  file_size: number;
+  file_path: string;
+}
+
 interface RecordItem {
   id: string;
   patient_id: string;
@@ -586,6 +594,9 @@ interface RecordItem {
   date: string;
   summary: string;
   icon: string;
+  grant_id: string;
+  grant_expires_at: string;
+  files: RecordFileItem[];
 }
 
 function PatientsSection() {
@@ -593,6 +604,7 @@ function PatientsSection() {
   const [query, setQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [activePatient, setActivePatient] = useState<PatientCard | null>(null);
+  const [selectedRecord, setSelectedRecord] = useState<RecordItem | null>(null);
 
   const [patients, setPatients] = useState<PatientCard[]>([]);
   const [records, setRecords] = useState<RecordItem[]>([]);
@@ -611,13 +623,42 @@ function PatientsSection() {
         .eq('role', 'patient')
         .order('full_name', { ascending: true });
 
-      const { data: recs, error: recErr } = await supabase
-        .from('medical_records')
-        .select('id, patient_id, title, category, provider, date, summary, icon')
-        .order('date', { ascending: false });
+      // Only pull records this provider currently has consent for — a row in
+      // access_grants that isn't revoked and hasn't passed its expiry. This is
+      // the client-side mirror of the RLS policy; the DB is the real gate,
+      // this just avoids rendering something the query already excludes.
+      const nowIso = new Date().toISOString();
+      const { data: grantRows, error: recErr } = await supabase
+        .from('access_grants')
+        .select(
+          `id, expires_at, revoked_at,
+           medical_records (
+             id, patient_id, title, category, provider, date, summary, icon,
+             record_files ( id, file_name, file_type, file_size, file_path )
+           )`
+        )
+        .eq('doctor_id', profile.id)
+        .is('revoked_at', null)
+        .gt('expires_at', nowIso);
 
       if (patErr) throw patErr;
       if (recErr) throw recErr;
+
+      const mapped: RecordItem[] = (grantRows ?? [])
+        .filter((g: any) => g.medical_records)
+        .map((g: any) => ({
+          id: g.medical_records.id,
+          patient_id: g.medical_records.patient_id,
+          title: g.medical_records.title,
+          category: g.medical_records.category,
+          provider: g.medical_records.provider,
+          date: g.medical_records.date,
+          summary: g.medical_records.summary,
+          icon: g.medical_records.icon,
+          grant_id: g.id,
+          grant_expires_at: g.expires_at,
+          files: g.medical_records.record_files ?? [],
+        }));
 
       setPatients(
         (pats ?? []).map((p, i) => ({
@@ -634,7 +675,7 @@ function PatientsSection() {
           color: colors[i % colors.length],
         }))
       );
-      setRecords((recs ?? []) as RecordItem[]);
+      setRecords(mapped.sort((a, b) => (a.date < b.date ? 1 : -1)));
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Something went wrong loading your patients.');
     } finally {
@@ -654,6 +695,17 @@ function PatientsSection() {
 
   const recordsFor = (patientId: string) => records.filter((r) => r.patient_id === patientId);
   const activeRecords = activePatient ? recordsFor(activePatient.id) : [];
+
+  const openFile = async (file: RecordFileItem) => {
+    const { data, error: signErr } = await supabase.storage
+      .from('medical-records')
+      .createSignedUrl(file.file_path, 60);
+    if (signErr || !data) {
+      console.error('Signed URL error:', signErr);
+      return;
+    }
+    window.open(data.signedUrl, '_blank', 'noopener');
+  };
 
   return (
     <div className="space-y-6">
@@ -805,7 +857,12 @@ function PatientsSection() {
                 </div>
               )}
               {activeRecords.map((r) => (
-                <div key={r.id} className="rounded-xl border border-background-200/60 p-4 bg-white">
+                <button
+                  key={r.id}
+                  type="button"
+                  onClick={() => setSelectedRecord(r)}
+                  className="w-full text-left rounded-xl border border-background-200/60 p-4 bg-white hover:bg-background-50 hover:border-primary-200 transition-colors cursor-pointer"
+                >
                   <div className="flex items-start gap-3">
                     <div className="w-10 h-10 rounded-lg flex items-center justify-center shrink-0 bg-primary-50 text-primary-600">
                       <i className={r.icon}></i>
@@ -822,10 +879,67 @@ function PatientsSection() {
                       </div>
                       <p className="text-xs text-foreground-400 mt-0.5">{r.category} · {r.provider}</p>
                       <p className="text-sm text-foreground-600 leading-relaxed mt-2">{r.summary}</p>
+                      {r.files.length > 0 && (
+                        <p className="text-[11px] text-primary-600 mt-2 flex items-center gap-1">
+                          <i className="ri-attachment-2"></i> {r.files.length} file{r.files.length === 1 ? '' : 's'} attached
+                        </p>
+                      )}
                     </div>
                   </div>
-                </div>
+                </button>
               ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {selectedRecord && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => setSelectedRecord(null)}></div>
+          <div className="relative bg-white rounded-2xl w-full max-w-lg max-h-[85vh] flex flex-col overflow-hidden animate-scale-in">
+            <div className="flex items-center justify-between px-6 py-5 border-b border-background-100">
+              <div>
+                <span className="text-[11px] font-semibold uppercase tracking-wider text-primary-600">{selectedRecord.category}</span>
+                <h2 className="font-heading text-lg font-bold text-foreground-900">{selectedRecord.title}</h2>
+              </div>
+              <button onClick={() => setSelectedRecord(null)} className="w-8 h-8 rounded-lg hover:bg-background-100 flex items-center justify-center text-foreground-400 cursor-pointer">
+                <i className="ri-close-line text-lg"></i>
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto px-6 py-5 space-y-5">
+              <div className="bg-background-50 p-4 rounded-xl space-y-2">
+                <p className="text-xs text-foreground-400">
+                  {selectedRecord.provider && <>Provider: <span className="font-medium text-foreground-700">{selectedRecord.provider}</span> · </>}
+                  Date: <span className="font-medium text-foreground-700">{new Date(selectedRecord.date).toLocaleDateString()}</span>
+                </p>
+                <p className="text-sm text-foreground-600 leading-relaxed">{selectedRecord.summary}</p>
+              </div>
+              <div>
+                <h4 className="text-xs font-semibold text-foreground-800 uppercase tracking-wider mb-2">
+                  Attached Documents ({selectedRecord.files.length})
+                </h4>
+                {selectedRecord.files.length === 0 ? (
+                  <p className="text-xs text-foreground-400 italic">No files attached to this record.</p>
+                ) : (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    {selectedRecord.files.map((file) => (
+                      <button
+                        key={file.id}
+                        type="button"
+                        onClick={() => openFile(file)}
+                        className="flex items-center gap-3 p-3 rounded-xl border border-background-200/80 hover:bg-background-50 transition-colors text-left w-full cursor-pointer"
+                      >
+                        <i className={`text-xl text-primary-600 ${file.file_type.includes('pdf') ? 'ri-file-pdf-line' : 'ri-image-line'}`}></i>
+                        <div className="min-w-0 flex-1">
+                          <p className="text-xs font-semibold text-foreground-800 truncate">{file.file_name}</p>
+                          <p className="text-[10px] text-foreground-400">{(file.file_size / 1024).toFixed(0)} KB</p>
+                        </div>
+                        <i className="ri-download-line text-foreground-400 hover:text-foreground-700"></i>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         </div>

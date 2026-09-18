@@ -148,9 +148,9 @@ function OverviewSection({ onNavigate, onUploadRecord }: { onNavigate: (s: Secti
         const [apptsRes, vitalsRes, resultsRes, rxRes] = await Promise.all([
           supabase
             .from('appointments')
-            .select('id, appointment_date, start_time, type, status, reason, provider:profiles!appointments_provider_id_fkey(full_name, specialty)')
+            .select('id, doctor_name, specialty, clinic, type, date, time, status, reason')
             .eq('patient_id', patientId)
-            .order('appointment_date', { ascending: true }),
+            .order('date', { ascending: true }),
           supabase
             .from('vital_signs')
             .select('*')
@@ -170,10 +170,17 @@ function OverviewSection({ onNavigate, onUploadRecord }: { onNavigate: (s: Secti
             .eq('status', 'active'),
         ]);
 
+        if (apptsRes.error) console.error('appointments load error:', apptsRes.error);
+        if (vitalsRes.error) console.error('vitals load error:', vitalsRes.error);
+        if (resultsRes.error) console.error('test_results load error:', resultsRes.error);
+        if (rxRes.error) console.error('prescriptions load error:', rxRes.error);
+
         setAppointments(apptsRes.data ?? []);
         setVitals(vitalsRes.data ?? []);
         setResults((resultsRes.data ?? []) as TestResultRow[]);
         setPrescriptions(rxRes.data ?? []);
+      } catch (e) {
+        console.error('Overview load failed:', e);
       } finally {
         setLoading(false);
       }
@@ -197,7 +204,7 @@ function OverviewSection({ onNavigate, onUploadRecord }: { onNavigate: (s: Secti
   const latestVitals = Array.from(latestVitalsMap.values()).slice(0, 4);
 
   const quickStats = [
-    { icon: 'ri-calendar-check-line', label: 'Upcoming Visits', value: String(upcomingAppts.length), sub: nextAppt ? nextAppt.appointment_date : 'None', color: 'bg-primary-50 text-primary-600' },
+    { icon: 'ri-calendar-check-line', label: 'Upcoming Visits', value: String(upcomingAppts.length), sub: nextAppt ? nextAppt.date : 'None', color: 'bg-primary-50 text-primary-600' },
     { icon: 'ri-capsule-line', label: 'Active Meds', value: String(prescriptions.length), sub: 'Prescriptions', color: 'bg-secondary-50 text-secondary-600' },
     { icon: 'ri-heart-pulse-line', label: 'Last Vitals Log', value: vitals[0] ? new Date(vitals[0].recorded_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '—', sub: 'Recent update', color: 'bg-accent-50 text-accent-600' },
     { icon: 'ri-file-chart-line', label: 'Test Results', value: String(results.length), sub: 'On record', color: 'bg-primary-50 text-primary-600' },
@@ -324,7 +331,7 @@ function OverviewSection({ onNavigate, onUploadRecord }: { onNavigate: (s: Secti
               <p className="text-sm text-foreground-400 py-6 text-center">No upcoming appointments scheduled.</p>
             )}
             {upcomingAppts.slice(0, 2).map((a, i) => {
-              const provName = a.provider?.full_name ?? 'Doctor';
+              const provName = a.doctor_name || 'Doctor';
               return (
                 <div key={a.id} className="p-4 rounded-xl border border-background-200/60 flex items-center justify-between gap-3">
                   <div className="flex items-center gap-3">
@@ -333,12 +340,12 @@ function OverviewSection({ onNavigate, onUploadRecord }: { onNavigate: (s: Secti
                     </div>
                     <div>
                       <p className="text-sm font-semibold text-foreground-900">{provName}</p>
-                      <p className="text-xs text-foreground-400">{a.provider?.specialty ?? a.type} · {a.reason || 'General Visit'}</p>
+                      <p className="text-xs text-foreground-400">{a.specialty || a.type} · {a.reason || 'General Visit'}</p>
                     </div>
                   </div>
                   <div className="text-right shrink-0">
-                    <p className="text-xs font-semibold text-foreground-900">{a.appointment_date}</p>
-                    <p className="text-[11px] text-foreground-400">{a.start_time || ''}</p>
+                    <p className="text-xs font-semibold text-foreground-900">{a.date}</p>
+                    <p className="text-[11px] text-foreground-400">{a.time || ''}</p>
                   </div>
                 </div>
               );
@@ -402,17 +409,14 @@ interface DoctorProfile {
 interface AppointmentRow {
   id: string;
   provider_id: string;
-  appointment_date: string;
-  start_time: string | null;
+  doctor_name: string | null;
+  specialty: string | null;
+  clinic: string | null;
+  date: string;
+  time: string | null;
   type: string;
   status: string;
   reason: string | null;
-  notes: string | null;
-  provider?: {
-    full_name: string;
-    specialty: string | null;
-    hospital: string | null;
-  };
 }
 
 const APPT_TYPES = [
@@ -457,9 +461,9 @@ function AppointmentsSection() {
       const [apptsRes, docsRes] = await Promise.all([
         supabase
           .from('appointments')
-          .select('id, provider_id, appointment_date, start_time, type, status, reason, notes, provider:profiles!appointments_provider_id_fkey(full_name, specialty, hospital)')
+          .select('id, provider_id, doctor_name, specialty, clinic, date, time, type, status, reason')
           .eq('patient_id', profile.id)
-          .order('appointment_date', { ascending: false }),
+          .order('date', { ascending: false }),
         supabase
           .from('profiles')
           .select('id, full_name, specialty, hospital')
@@ -501,15 +505,20 @@ function AppointmentsSection() {
     setFormError(null);
     setSubmitting(true);
     try {
+      const chosenDoctor = doctors.find((d) => d.id === selectedDoctorId);
+      const combinedReason = [reason.trim(), notes.trim()].filter(Boolean).join(' — ') || null;
+
       const { error: insertErr } = await supabase.from('appointments').insert({
         patient_id: profile.id,
         provider_id: selectedDoctorId,
-        appointment_date: selectedDate,
-        start_time: selectedTime || null,
+        doctor_name: chosenDoctor?.full_name ?? null,
+        specialty: chosenDoctor?.specialty ?? null,
+        clinic: chosenDoctor?.hospital ?? null,
+        date: selectedDate,
+        time: selectedTime || null,
         type: selectedType,
-        status: 'confirmed',
-        reason: reason.trim() || null,
-        notes: notes.trim() || null,
+        status: 'upcoming',
+        reason: combinedReason,
       });
 
       if (insertErr) throw insertErr;
@@ -545,9 +554,8 @@ function AppointmentsSection() {
     }
   };
 
-  const todayStr = new Date().toISOString().split('T')[0];
-  const upcoming = appointments.filter((a) => a.status !== 'cancelled' && a.appointment_date >= todayStr);
-  const past = appointments.filter((a) => a.status === 'cancelled' || a.appointment_date < todayStr);
+const upcoming = appointments.filter((a) => a.status !== 'cancelled' && a.status !== 'completed');
+const past = appointments.filter((a) => a.status === 'cancelled' || a.status === 'completed');
 
   return (
     <div className="space-y-6">
@@ -593,7 +601,8 @@ function AppointmentsSection() {
                 </div>
               )}
               {upcoming.map((a, i) => {
-                const provName = a.provider?.full_name ?? 'Doctor';
+                const provName = a.doctor_name ?? 'Doctor';
+
                 return (
                   <div key={a.id} className="bg-white rounded-2xl border border-background-200/60 p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                     <div className="flex items-start gap-4">
@@ -605,7 +614,7 @@ function AppointmentsSection() {
                           <h3 className="font-semibold text-foreground-900 text-base">{provName}</h3>
                           <span className="px-2.5 py-0.5 rounded-full bg-primary-50 text-primary-700 text-xs font-medium">{a.type}</span>
                         </div>
-                        <p className="text-xs text-foreground-400 mt-0.5">{a.provider?.specialty ?? 'General Practice'}{a.provider?.hospital ? ` · ${a.provider.hospital}` : ''}</p>
+                        <p className="text-xs text-foreground-400 mt-0.5">{a.specialty ?? 'General Practice'}{a.clinic ? ` · ${a.clinic}` : ''}</p>
                         {a.reason && <p className="text-xs text-foreground-600 mt-2"><strong>Reason:</strong> {a.reason}</p>}
                       </div>
                     </div>
@@ -632,7 +641,7 @@ function AppointmentsSection() {
             <div className="bg-white rounded-2xl border border-background-200/60 divide-y divide-background-100">
               {past.length === 0 && <p className="p-4 text-sm text-foreground-400">No past visits on record.</p>}
               {past.map((a) => {
-                const provName = a.provider?.full_name ?? 'Doctor';
+              const provName = a.doctor_name ?? 'Doctor';
                 return (
                   <div key={a.id} className="p-4 flex items-center justify-between">
                     <div>
@@ -802,7 +811,9 @@ type Tab = 'records' | 'results';
 interface RecordFile {
   id: string;
   record_id: string;
-  file_url: string;
+  file_path: string;
+  /** Legacy rows created before signed URLs; optional. */
+  file_url?: string | null;
   file_name: string;
   file_type: string;
   file_size: number;
@@ -881,6 +892,24 @@ function RecordsSection({
   const showToast = (msg: string) => {
     setToastMsg(msg);
     setTimeout(() => setToastMsg(null), 3500);
+  };
+
+  const openFile = async (file: RecordFile) => {
+    // Legacy rows may still carry a public URL instead of a storage path.
+    if (!file.file_path && file.file_url) {
+      window.open(file.file_url, '_blank', 'noopener');
+      return;
+    }
+    const { data, error: signErr } = await supabase.storage
+      .from('medical-records')
+      .createSignedUrl(file.file_path, 60);
+
+    if (signErr || !data) {
+      console.error('Signed URL error:', signErr);
+      showToast('Could not open file.');
+      return;
+    }
+    window.open(data.signedUrl, '_blank', 'noopener');
   };
 
   const loadData = useCallback(async () => {
@@ -963,79 +992,91 @@ function RecordsSection({
     setFormFiles((prev) => [...prev, ...chosen].slice(0, 3));
   };
 
-  const handleCreateRecord = async (e: FormEvent) => {
-    e.preventDefault();
-    if (!profile) return;
-    if (!formName.trim() || !formDesc.trim()) {
-      setUploadError('Record Name and Description are required.');
-      return;
+const handleCreateRecord = async (e: FormEvent) => {
+  e.preventDefault();
+  if (!profile) return;
+  if (!formName.trim() || !formDesc.trim()) {
+    setUploadError('Record Name and Description are required.');
+    return;
+  }
+  setUploading(true);
+  setUploadError(null);
+
+  const uploadedPaths: string[] = [];
+
+  try {
+    // 1. Upload to storage FIRST — nothing is written to the DB if this fails
+    const staged: Array<{ path: string; file: File }> = [];
+    for (const file of formFiles) {
+      const cleanName = file.name.replace(/[^a-zA-Z0-9.-]/g, '_');
+      const filePath = `${profile.id}/${crypto.randomUUID()}-${cleanName}`;
+
+      const { error: storageErr } = await supabase.storage
+        .from('medical-records')
+        .upload(filePath, file, { contentType: file.type, upsert: false });
+
+      if (storageErr) throw new Error(`Upload failed for ${file.name}: ${storageErr.message}`);
+      uploadedPaths.push(filePath);
+      staged.push({ path: filePath, file });
     }
-    setUploading(true);
-    setUploadError(null);
 
-    try {
-      const { data: newRecord, error: recErr } = await supabase
-        .from('medical_records')
-        .insert({
-          patient_id: profile.id,
-          name: formName.trim(),
-          description: formDesc.trim(),
-          category: formCategory,
-          record_date: formDate,
-        })
-        .select()
-        .single();
+    // 2. Create the record
+    const { data: newRecord, error: recErr } = await supabase
+      .from('medical_records')
+      .insert({
+        patient_id: profile.id,
+        name: formName.trim(),
+        description: formDesc.trim(),
+        category: formCategory,
+        record_date: formDate,
+      })
+      .select()
+      .single();
+    if (recErr) throw recErr;
 
-      if (recErr) throw recErr;
-
-        for (const file of formFiles) {
-        // Clean filename to prevent URI encoding issues
-        const cleanName = file.name.replace(/[^a-zA-Z0-9.-]/g, '_');
-        const filePath = `${profile.id}/${newRecord.id}/${Date.now()}-${cleanName}`;
-        
-        const { error: storageErr } = await supabase.storage
-          .from('medical-records')
-          .upload(filePath, file);
-
-        if (storageErr) {
-          console.error('Storage upload error:', storageErr);
-          throw new Error(`Failed to upload ${file.name}: ${storageErr.message}`);
-        }
-
-        const { data: publicUrlData } = supabase.storage
-          .from('medical-records')
-          .getPublicUrl(filePath);
-
-        const { error: fileInsertErr } = await supabase
-          .from('record_files')
-          .insert({
+    // 3. Insert file rows — .select() forces an RLS read check, so a missing
+    //    SELECT policy throws here instead of silently returning [] later
+    if (staged.length > 0) {
+      const { data: inserted, error: fileErr } = await supabase
+        .from('record_files')
+        .insert(
+          staged.map(({ path, file }) => ({
             record_id: newRecord.id,
-            file_url: publicUrlData.publicUrl,
+            file_path: path,
             file_name: file.name,
             file_type: file.type || 'application/octet-stream',
             file_size: file.size,
-          });
+          }))
+        )
+        .select();
 
-        if (fileInsertErr) {
-          console.error('Record file insert error:', fileInsertErr);
-          throw new Error(`Failed to save file record: ${fileInsertErr.message}`);
-        }
+      if (fileErr) {
+        await supabase.from('medical_records').delete().eq('id', newRecord.id);
+        throw new Error(`Saved the upload but could not link it: ${fileErr.message}`);
       }
-
-
-      setShowUploadModal(false);
-      onUploadClosed?.();
-      setFormName('');
-      setFormDesc('');
-      setFormFiles([]);
-      showToast('Medical record uploaded successfully.');
-      await loadData();
-    } catch (err: any) {
-      setUploadError(err.message || 'Failed to upload record.');
-    } finally {
-      setUploading(false);
+      if (!inserted || inserted.length !== staged.length) {
+        throw new Error('Files were written but cannot be read back — check RLS SELECT policy on record_files.');
+      }
     }
-  };
+
+    setShowUploadModal(false);
+    onUploadClosed?.();
+    setFormName('');
+    setFormDesc('');
+    setFormFiles([]);
+    showToast('Medical record uploaded successfully.');
+    await loadData();
+  } catch (err: any) {
+    // clean up orphaned objects so retries don't pile up in the bucket
+    if (uploadedPaths.length) {
+      await supabase.storage.from('medical-records').remove(uploadedPaths);
+    }
+    console.error('Record upload failed:', err);
+    setUploadError(err.message || 'Failed to upload record.');
+  } finally {
+    setUploading(false);
+  }
+};
 
   const handleGrantAccess = async () => {
     if (!selectedRecord || !selectedDoctorId) return;
@@ -1376,12 +1417,11 @@ function RecordsSection({
                 ) : (
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                     {selectedRecord.files?.map((file) => (
-                      <a
+                      <button
                         key={file.id}
-                        href={file.file_url}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="flex items-center gap-3 p-3 rounded-xl border border-background-200/80 hover:bg-background-50 transition-colors"
+                        type="button"
+                        onClick={() => openFile(file)}
+                        className="flex items-center gap-3 p-3 rounded-xl border border-background-200/80 hover:bg-background-50 transition-colors text-left w-full"
                       >
                         <i className={`text-xl text-primary-600 ${file.file_type.includes('pdf') ? 'ri-file-pdf-line' : 'ri-image-line'}`}></i>
                         <div className="min-w-0 flex-1">
@@ -1389,7 +1429,7 @@ function RecordsSection({
                           <p className="text-[10px] text-foreground-400">{(file.file_size / 1024).toFixed(0)} KB</p>
                         </div>
                         <i className="ri-download-line text-foreground-400 hover:text-foreground-700"></i>
-                      </a>
+                      </button>
                     ))}
                   </div>
                 )}
