@@ -553,9 +553,10 @@ function AppointmentsSection() {
       setCancellingId(null);
     }
   };
-
+const todayStr = new Date().toISOString().split('T')[0];
 const upcoming = appointments.filter((a) => a.status !== 'cancelled' && a.status !== 'completed');
 const past = appointments.filter((a) => a.status === 'cancelled' || a.status === 'completed');
+
 
   return (
     <div className="space-y-6">
