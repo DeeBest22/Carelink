@@ -295,7 +295,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const { data, error } = await supabase.auth.signUp({
       email,
       password,
-      options: { data: { role, full_name: fullName.trim() } },
+      options: {
+        data: { role, full_name: fullName.trim() },
+        // Without this, the confirmation-email link falls back to whatever Site URL
+        // is set in the Supabase dashboard — wrong on every environment but one.
+        emailRedirectTo: typeof window !== 'undefined' ? `${window.location.origin}/auth` : undefined,
+      },
     });
     if (error) return { error: error.message };
     const newUser = data.user;
