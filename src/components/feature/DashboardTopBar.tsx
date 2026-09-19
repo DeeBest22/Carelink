@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useAuth } from '@/hooks/useAuth';
+import UserAvatar from '@/components/base/UserAvatar';
 
 interface DashboardTopBarProps {
   name: string;
@@ -11,7 +12,7 @@ interface DashboardTopBarProps {
 export default function DashboardTopBar({ name, roleLabel, initials, onMenuClick }: DashboardTopBarProps) {
   const [notifOpen, setNotifOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
-  const { signOut } = useAuth();
+  const { signOut, avatarUrl } = useAuth();
 
   return (
     <header className="sticky top-0 z-30 bg-background-50/80 backdrop-blur-md border-b border-background-200/60">
@@ -73,9 +74,12 @@ export default function DashboardTopBar({ name, roleLabel, initials, onMenuClick
               onClick={() => setMenuOpen((v) => !v)}
               className="flex items-center gap-2.5 cursor-pointer"
             >
-              <div className="w-8 h-8 rounded-full bg-primary-500 text-white flex items-center justify-center text-xs font-bold shrink-0">
-                {initials}
-              </div>
+              <UserAvatar
+                src={avatarUrl}
+                initials={initials}
+                alt={name}
+                className="w-8 h-8 rounded-full text-xs"
+              />
               <div className="hidden md:block leading-tight text-left">
                 <p className="text-sm font-semibold text-foreground-900">{name}</p>
                 <p className="text-[11px] text-foreground-400">{roleLabel}</p>
@@ -85,9 +89,17 @@ export default function DashboardTopBar({ name, roleLabel, initials, onMenuClick
 
             {menuOpen && (
               <div className="absolute right-0 mt-2 w-48 bg-white rounded-2xl border border-background-200 shadow-lg overflow-hidden">
-                <div className="px-4 py-3 border-b border-background-100">
-                  <p className="text-sm font-semibold text-foreground-900">{name}</p>
-                  <p className="text-[11px] text-foreground-400">{roleLabel}</p>
+                <div className="px-4 py-3 border-b border-background-100 flex items-center gap-2.5">
+                  <UserAvatar
+                    src={avatarUrl}
+                    initials={initials}
+                    alt={name}
+                    className="w-9 h-9 rounded-full text-xs"
+                  />
+                  <div className="min-w-0">
+                    <p className="text-sm font-semibold text-foreground-900 truncate">{name}</p>
+                    <p className="text-[11px] text-foreground-400 truncate">{roleLabel}</p>
+                  </div>
                 </div>
                 <button
                   onClick={() => signOut()}
