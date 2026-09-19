@@ -12,6 +12,8 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as AuthRouteImport } from './routes/auth'
 import { Route as GetStartedRouteImport } from './routes/get-started'
+import { Route as IndexDesignRouteImport } from './routes/indexDesign'
+import { Route as OnboardingRouteImport } from './routes/onboarding'
 import { Route as PatientRouteImport } from './routes/patient'
 import { Route as ProviderRouteImport } from './routes/provider'
 
@@ -30,6 +32,16 @@ const GetStartedRoute = GetStartedRouteImport.update({
   path: '/get-started',
   getParentRoute: () => rootRouteImport,
 } as any)
+const IndexDesignRoute = IndexDesignRouteImport.update({
+  id: '/indexDesign',
+  path: '/indexDesign',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const OnboardingRoute = OnboardingRouteImport.update({
+  id: '/onboarding',
+  path: '/onboarding',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const PatientRoute = PatientRouteImport.update({
   id: '/patient',
   path: '/patient',
@@ -45,6 +57,8 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/auth': typeof AuthRoute
   '/get-started': typeof GetStartedRoute
+  '/indexDesign': typeof IndexDesignRoute
+  '/onboarding': typeof OnboardingRoute
   '/patient': typeof PatientRoute
   '/provider': typeof ProviderRoute
 }
@@ -52,6 +66,8 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/auth': typeof AuthRoute
   '/get-started': typeof GetStartedRoute
+  '/indexDesign': typeof IndexDesignRoute
+  '/onboarding': typeof OnboardingRoute
   '/patient': typeof PatientRoute
   '/provider': typeof ProviderRoute
 }
@@ -60,21 +76,47 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/auth': typeof AuthRoute
   '/get-started': typeof GetStartedRoute
+  '/indexDesign': typeof IndexDesignRoute
+  '/onboarding': typeof OnboardingRoute
   '/patient': typeof PatientRoute
   '/provider': typeof ProviderRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/auth' | '/get-started' | '/patient' | '/provider'
+  fullPaths:
+    | '/'
+    | '/auth'
+    | '/get-started'
+    | '/indexDesign'
+    | '/onboarding'
+    | '/patient'
+    | '/provider'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/auth' | '/get-started' | '/patient' | '/provider'
-  id: '__root__' | '/' | '/auth' | '/get-started' | '/patient' | '/provider'
+  to:
+    | '/'
+    | '/auth'
+    | '/get-started'
+    | '/indexDesign'
+    | '/onboarding'
+    | '/patient'
+    | '/provider'
+  id:
+    | '__root__'
+    | '/'
+    | '/auth'
+    | '/get-started'
+    | '/indexDesign'
+    | '/onboarding'
+    | '/patient'
+    | '/provider'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AuthRoute: typeof AuthRoute
   GetStartedRoute: typeof GetStartedRoute
+  IndexDesignRoute: typeof IndexDesignRoute
+  OnboardingRoute: typeof OnboardingRoute
   PatientRoute: typeof PatientRoute
   ProviderRoute: typeof ProviderRoute
 }
@@ -102,6 +144,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof GetStartedRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/indexDesign': {
+      id: '/indexDesign'
+      path: '/indexDesign'
+      fullPath: '/indexDesign'
+      preLoaderRoute: typeof IndexDesignRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/onboarding': {
+      id: '/onboarding'
+      path: '/onboarding'
+      fullPath: '/onboarding'
+      preLoaderRoute: typeof OnboardingRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/patient': {
       id: '/patient'
       path: '/patient'
@@ -123,6 +179,8 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AuthRoute: AuthRoute,
   GetStartedRoute: GetStartedRoute,
+  IndexDesignRoute: IndexDesignRoute,
+  OnboardingRoute: OnboardingRoute,
   PatientRoute: PatientRoute,
   ProviderRoute: ProviderRoute,
 }
