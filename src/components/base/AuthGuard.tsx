@@ -8,7 +8,7 @@ interface AuthGuardProps {
 }
 
 export default function AuthGuard({ role, children }: AuthGuardProps) {
-  const { user, profile, loading } = useAuth();
+  const { user, profile, loading, needsRoleSelection, needsProviderOnboarding } = useAuth();
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -17,12 +17,22 @@ export default function AuthGuard({ role, children }: AuthGuardProps) {
       navigate({ to: '/auth', replace: true });
       return;
     }
+    // Signed in (e.g. with Google) but no profile yet — finish picking a role first.
+    if (needsRoleSelection) {
+      navigate({ to: '/auth', replace: true });
+      return;
+    }
     if (profile && profile.role !== role) {
       navigate({ to: profile.role === 'patient' ? '/patient' : '/provider', replace: true });
+      return;
     }
-  }, [loading, user, profile, role, navigate]);
+    // Providers finish the practice questionnaire before reaching the dashboard.
+    if (needsProviderOnboarding) {
+      navigate({ to: '/onboarding', replace: true });
+    }
+  }, [loading, user, profile, needsRoleSelection, needsProviderOnboarding, role, navigate]);
 
-  if (loading || !user || (profile && profile.role !== role)) {
+  if (loading || !user || needsRoleSelection || needsProviderOnboarding || (profile && profile.role !== role)) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center gap-3 bg-background-50">
         <div className="w-11 h-11 rounded-xl bg-primary-500 text-white flex items-center justify-center">
