@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useState, useCallback, type ReactNode } from 'react';
 import { supabase } from '@/lib/supabase';
 import type { User } from '@supabase/supabase-js';
+
 export interface Profile {
   id: string;
   auth_id: string | null;
@@ -12,23 +13,103 @@ export interface Profile {
   hospital: string | null;
   insurance: string | null;
   primary_doctor: string | null;
+  /** Optional — only present if you've added the avatar_url column to `profiles`. */
+  avatar_url?: string | null;
+
+  /* Provider onboarding fields. All optional: they only exist once the
+     onboarding migration has been applied, and reading a key that is absent
+     tells us the column isn't there yet (see `needsProviderOnboarding`). */
+  title?: string | null;
+  license_number?: string | null;
+  years_experience?: number | null;
+  phone?: string | null;
+  practice_address?: string | null;
+  bio?: string | null;
+  languages?: string[] | null;
+  consultation_modes?: string[] | null;
+  working_days?: string[] | null;
+  working_hours?: string | null;
+  accepting_patients?: boolean | null;
+  onboarding_completed?: boolean | null;
+  onboarded_at?: string | null;
 }
+
 type Role = 'patient' | 'provider';
+
 interface SignUpResult {
   error?: string;
   needsConfirmation?: boolean;
 }
+
 interface AuthContextValue {
   user: User | null;
   profile: Profile | null;
   loading: boolean;
   profileError: string | null;
+  /** Google (or other provider) picture for the signed-in user, if any. */
+  avatarUrl: string | null;
+  /** True when someone is authenticated (e.g. via Google) but hasn't picked a role yet. */
+  needsRoleSelection: boolean;
+  /** True when a provider still has to complete the onboarding questionnaire. */
+  needsProviderOnboarding: boolean;
   signUp: (email: string, password: string, role: Role, fullName: string) => Promise<SignUpResult>;
   signIn: (email: string, password: string) => Promise<{ error?: string; profile?: Profile | null }>;
+  signInWithGoogle: (role?: Role) => Promise<{ error?: string }>;
+  completeSocialSignup: (role: Role) => Promise<{ error?: string; profile?: Profile | null }>;
   signOut: () => Promise<void>;
   refreshProfile: () => Promise<void>;
 }
+
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
+
+/* --------------------------- OAuth helpers --------------------------- */
+
+const PENDING_ROLE_KEY = 'carelink-pending-role';
+
+function readPendingRole(): Role | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const v = window.localStorage.getItem(PENDING_ROLE_KEY);
+    return v === 'patient' || v === 'provider' ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+function writePendingRole(role: Role | null) {
+  if (typeof window === 'undefined') return;
+  try {
+    if (role) window.localStorage.setItem(PENDING_ROLE_KEY, role);
+    else window.localStorage.removeItem(PENDING_ROLE_KEY);
+  } catch {
+    /* storage unavailable — non-fatal */
+  }
+}
+
+type Meta = Record<string, unknown> | undefined;
+
+/** Google returns the picture as `avatar_url` (Supabase-normalised) or `picture` (raw claim). */
+function avatarFromUser(user: User | null): string | null {
+  const m = user?.user_metadata as Meta;
+  const url = (m?.['avatar_url'] ?? m?.['picture']) as string | undefined;
+  return typeof url === 'string' && url.length > 0 ? url : null;
+}
+
+/** Best-effort display name from provider metadata, falling back to the email handle. */
+function nameFromUser(user: User): string {
+  const m = user.user_metadata as Meta;
+  const candidates = [
+    m?.['full_name'],
+    m?.['name'],
+    [m?.['given_name'], m?.['family_name']].filter(Boolean).join(' ').trim() || undefined,
+    user.email?.split('@')[0],
+  ];
+  const picked = candidates.find((c) => typeof c === 'string' && (c as string).trim().length > 0);
+  return ((picked as string) ?? 'CareLink User').trim();
+}
+
+/* ---------------------------- Profile I/O ---------------------------- */
+
 async function fetchProfile(userId: string): Promise<{ profile: Profile | null; error: string | null }> {
   const { data, error } = await supabase
     .from('profiles')
@@ -41,6 +122,24 @@ async function fetchProfile(userId: string): Promise<{ profile: Profile | null; 
   }
   return { profile: (data as Profile) ?? null, error: null };
 }
+
+// The avatar is always readable from auth metadata, so mirroring it into `profiles`
+// is purely a convenience (it lets providers see patient pictures and vice versa).
+// If the column doesn't exist we disable the sync after the first failure instead of
+// letting it break sign-in.
+let avatarColumnAvailable = true;
+
+async function syncAvatar(profile: Profile, user: User) {
+  if (!avatarColumnAvailable) return;
+  const url = avatarFromUser(user);
+  if (!url || profile.avatar_url === url) return;
+  const { error } = await supabase.from('profiles').update({ avatar_url: url }).eq('id', profile.id);
+  if (error) {
+    avatarColumnAvailable = false;
+    console.info('Skipping avatar sync — add an `avatar_url` column to `profiles` to enable it.');
+  }
+}
+
 async function seedPatientData(patientId: string) {
   const { data: doctors } = await supabase
     .from('profiles')
@@ -76,6 +175,7 @@ async function seedPatientData(patientId: string) {
     { patient_id: patientId, medication: 'Salbutamol Inhaler', dosage: '100 mcg', frequency: 'As needed', prescribed_by: 'Dr. Ibrahim Musa', start_date: '2026-07-30', end_date: '2027-07-30', status: 'active', refills_left: 5, instructions: '2 puffs when short of breath, max 8 puffs/day.' },
   ]);
 }
+
 async function createProfileForUser(userId: string, role: Role, fullName: string, email: string) {
   const firstName = fullName.trim().split(/\s+/)[0] ?? '';
   const normalizedEmail = email.trim().toLowerCase();
@@ -103,23 +203,44 @@ async function createProfileForUser(userId: string, role: Role, fullName: string
   if (prof) await seedPatientData(prof.id);
   return null;
 }
-// If a user has an auth account but no profiles row yet (e.g. they signed up while
-// email confirmation was required, so signUp's immediate profile creation was skipped),
-// create it now from the role/full_name stored in their auth metadata at signup time.
+
+// If a user has an auth account but no profiles row yet, create it now from whatever
+// we know about them:
+//   - email/password signup -> role + full_name were stored in auth metadata at signup
+//   - Google signup         -> role comes from the choice stashed before the OAuth
+//                              redirect, and the name comes from the Google profile
+// When neither source gives us a role, we leave the profile null and the UI asks the
+// person to pick one (see `needsRoleSelection`).
 async function ensureProfile(user: User): Promise<{ profile: Profile | null; error: string | null }> {
   const existing = await fetchProfile(user.id);
-  if (existing.profile || existing.error) return existing;
+  if (existing.profile) {
+    void syncAvatar(existing.profile, user);
+    return existing;
+  }
+  if (existing.error) return existing;
+
   const meta = user.user_metadata as { role?: Role; full_name?: string } | undefined;
-  if (!meta?.role || !meta?.full_name) return { profile: null, error: null };
-  const createErr = await createProfileForUser(user.id, meta.role, meta.full_name, user.email ?? '');
+  const role = meta?.role ?? readPendingRole();
+  if (!role) return { profile: null, error: null };
+
+  const fullName = meta?.full_name?.trim() || nameFromUser(user);
+  const createErr = await createProfileForUser(user.id, role, fullName, user.email ?? '');
+  writePendingRole(null);
   if (createErr) return { profile: null, error: createErr };
-  return fetchProfile(user.id);
+
+  const created = await fetchProfile(user.id);
+  if (created.profile) void syncAvatar(created.profile, user);
+  return created;
 }
+
+/* ------------------------------ Provider ------------------------------ */
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [profileError, setProfileError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+
   useEffect(() => {
     let mounted = true;
     supabase.auth.getSession().then(({ data, error }) => {
@@ -139,6 +260,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
       if (error) console.error('Failed to restore session:', error.message);
     });
+    // Fires on the redirect back from Google too: detectSessionInUrl exchanges the
+    // code in the URL for a session, which emits SIGNED_IN here.
     const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
       const sessionUser = session?.user ?? null;
       if (mounted) setUser(sessionUser);
@@ -147,6 +270,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           if (mounted) {
             setProfile(prof);
             setProfileError(profErr);
+            setLoading(false);
           }
         });
       } else if (mounted) {
@@ -159,12 +283,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       sub.subscription.unsubscribe();
     };
   }, []);
+
   const refreshProfile = useCallback(async () => {
     if (!user) return;
     const { profile: prof, error: profErr } = await ensureProfile(user);
     setProfile(prof);
     setProfileError(profErr);
   }, [user]);
+
   const signUp = useCallback(async (email: string, password: string, role: Role, fullName: string): Promise<SignUpResult> => {
     const { data, error } = await supabase.auth.signUp({
       email,
@@ -187,6 +313,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
     return { needsConfirmation: !data.session };
   }, []);
+
   const signIn = useCallback(async (email: string, password: string) => {
     const { data, error } = await supabase.auth.signInWithPassword({ email, password });
     if (error) return { error: error.message };
@@ -196,18 +323,83 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setProfileError(profErr);
     return profErr ? { error: profErr, profile: prof } : { profile: prof };
   }, []);
+
+  // Kicks off the Google redirect. `role` is stashed locally so that when Google sends
+  // the person back we know which kind of profile to create for a brand-new account.
+  // Returning users already have a profile, so the stash is ignored for them.
+  const signInWithGoogle = useCallback(async (role?: Role) => {
+    if (typeof window === 'undefined') return { error: 'Google sign-in is only available in the browser.' };
+    writePendingRole(role ?? null);
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: 'google',
+      options: {
+        redirectTo: `${window.location.origin}/auth`,
+        queryParams: { prompt: 'select_account' },
+      },
+    });
+    if (error) {
+      writePendingRole(null);
+      return { error: error.message };
+    }
+    return {};
+  }, []);
+
+  // Used by the "one more thing — are you a patient or a provider?" step that a new
+  // Google user lands on when they signed in without choosing a role first.
+  const completeSocialSignup = useCallback(async (role: Role) => {
+    if (!user) return { error: 'You are not signed in.' };
+    const createErr = await createProfileForUser(user.id, role, nameFromUser(user), user.email ?? '');
+    if (createErr) return { error: createErr };
+    writePendingRole(null);
+    const { profile: prof, error: profErr } = await fetchProfile(user.id);
+    if (prof) void syncAvatar(prof, user);
+    setProfile(prof);
+    setProfileError(profErr);
+    return profErr ? { error: profErr, profile: prof } : { profile: prof };
+  }, [user]);
+
   const signOut = useCallback(async () => {
     await supabase.auth.signOut();
+    writePendingRole(null);
     setUser(null);
     setProfile(null);
     setProfileError(null);
   }, []);
+
+  const avatarUrl = profile?.avatar_url ?? avatarFromUser(user);
+  const needsRoleSelection = !loading && !!user && !profile && !profileError;
+
+  // `select('*')` returns every existing column, so a NULL value still shows up
+  // as a key. A missing key therefore means the onboarding migration hasn't been
+  // applied — in which case we must not gate anyone, or providers would bounce
+  // to an onboarding page that can't save.
+  const onboardingTracked = !!profile && 'onboarding_completed' in profile;
+  const needsProviderOnboarding =
+    !loading && !!profile && profile.role === 'provider' && onboardingTracked && !profile.onboarding_completed;
+
   return (
-    <AuthContext.Provider value={{ user, profile, loading, profileError, signUp, signIn, signOut, refreshProfile }}>
+    <AuthContext.Provider
+      value={{
+        user,
+        profile,
+        loading,
+        profileError,
+        avatarUrl,
+        needsRoleSelection,
+        needsProviderOnboarding,
+        signUp,
+        signIn,
+        signInWithGoogle,
+        completeSocialSignup,
+        signOut,
+        refreshProfile,
+      }}
+    >
       {children}
     </AuthContext.Provider>
   );
 }
+
 export function useAuth() {
   const ctx = useContext(AuthContext);
   if (!ctx) throw new Error('useAuth must be used within AuthProvider');
