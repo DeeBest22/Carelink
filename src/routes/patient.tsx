@@ -7,6 +7,7 @@ import { healthTips } from '@/mocks/data/patient';
 import DashboardTopBar from '@/components/feature/DashboardTopBar';
 import UserAvatar from '@/components/base/UserAvatar';
 import AuthGuard from '@/components/base/AuthGuard';
+import { PatientCareRequests } from '@/components/feature/CareRequests';
 
 export const Route = createFileRoute('/patient')({
   component: PatientRoute,
@@ -22,10 +23,11 @@ function PatientRoute() {
   );
 }
 
-type Section = 'overview' | 'appointments' | 'records' | 'prescriptions';
+type Section = 'overview' | 'care' | 'appointments' | 'records' | 'prescriptions';
 
 const navItems: { key: Section; label: string; icon: string }[] = [
   { key: 'overview', label: 'Overview', icon: 'ri-dashboard-line' },
+  { key: 'care', label: 'Ask for care', icon: 'ri-message-3-line' },
   { key: 'appointments', label: 'Appointments', icon: 'ri-calendar-check-line' },
   { key: 'records', label: 'Medical Records', icon: 'ri-folder-user-line' },
   { key: 'prescriptions', label: 'Prescriptions', icon: 'ri-capsule-line' },
@@ -1829,6 +1831,7 @@ function Patient() {
         <DashboardTopBar name={fullName} roleLabel="Patient" initials={initials} onMenuClick={() => setMenuOpen(true)} />
         <main className="mx-auto w-full max-w-7xl flex-1 px-4 py-7 md:px-8 md:py-9">
           {section === 'overview' && <OverviewSection onNavigate={go} onUploadRecord={handleUploadFromOverview} />}
+          {section === 'care' && profile && <PatientCareRequests profile={profile} />}
           {section === 'appointments' && <AppointmentsSection />}
           {section === 'records' && <RecordsSection openUploadOnMount={openUploadModalOnRecords} onUploadClosed={() => setOpenUploadModalOnRecords(false)} />}
           {section === 'prescriptions' && <PrescriptionsSection />}

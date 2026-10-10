@@ -205,7 +205,7 @@ function AuthPage() {
     error?: string;
     error_description?: string;
   };
-  const { signIn, signUp, signInWithGoogle, profile, user, loading, needsRoleSelection } = useAuth();
+  const { signIn, signUp, signInWithGoogle, profile, user, loading, needsRoleSelection, needsProviderOnboarding, profileError } = useAuth();
 
   const [mode, setMode] = useState<Mode>(search.mode === 'signup' ? 'signup' : 'signin');
   const [role, setRole] = useState<Role>(search.role === 'provider' ? 'provider' : 'patient');
@@ -228,9 +228,9 @@ function AuthPage() {
   // Already signed in? Send them to their portal.
   useEffect(() => {
     if (!loading && user && profile) {
-      navigate({ to: profile.role === 'provider' ? '/provider' : '/patient', replace: true });
+      navigate({ to: needsProviderOnboarding ? '/onboarding' : profile.role === 'provider' ? '/provider' : '/patient', replace: true });
     }
-  }, [loading, user, profile, navigate]);
+  }, [loading, user, profile, needsProviderOnboarding, navigate]);
 
   const goToPortal = (roleValue: Role) => {
     navigate({ to: roleValue === 'patient' ? '/patient' : '/provider', replace: true });
@@ -345,6 +345,8 @@ function AuthPage() {
                 <Alert tone="info">{notice}</Alert>
               </div>
             )}
+
+            {!loading && user && profileError && <Alert tone="error">We signed you in, but could not load your CareLink profile: {profileError}</Alert>}
 
             <div className="mt-5">
               <GoogleButton

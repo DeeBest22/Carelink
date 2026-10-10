@@ -54,6 +54,7 @@ import { quickActions } from '@/mocks/data/provider';
 import DashboardTopBar from '@/components/feature/DashboardTopBar';
 import UserAvatar from '@/components/base/UserAvatar';
 import AuthGuard from '@/components/base/AuthGuard';
+import { ProviderCareInbox } from '@/components/feature/CareRequests';
 
 export const Route = createFileRoute('/provider')({
   component: ProviderRoute,
@@ -70,11 +71,12 @@ function ProviderRoute() {
   );
 }
 
-type Section = 'overview' | 'patients' | 'appointments';
+type Section = 'overview' | 'inbox' | 'patients' | 'appointments';
 type IconType = ComponentType<LucideProps>;
 
 const navItems: { key: Section; label: string; icon: IconType }[] = [
   { key: 'overview', label: 'Overview', icon: LayoutGrid },
+  { key: 'inbox', label: 'Care inbox', icon: ListChecks },
   { key: 'patients', label: 'Patients', icon: UsersRound },
   { key: 'appointments', label: 'Appointments', icon: CalendarCheck },
 ];
@@ -2230,6 +2232,7 @@ function Provider() {
         <main className="flex-1 px-4 py-7 md:px-8 md:py-9">
           <div className="mx-auto w-full max-w-7xl">
             {section === 'overview' && <OverviewSection onNavigate={go} onOpenPatient={openPatient} />}
+            {section === 'inbox' && profile && <ProviderCareInbox profile={profile} />}
             {section === 'appointments' && <AppointmentsSection />}
             {section === 'patients' && (
               <PatientsSection initialPatientId={pendingPatientId} onInitialPatientConsumed={clearPendingPatient} />
